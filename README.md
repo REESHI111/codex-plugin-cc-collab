@@ -93,6 +93,7 @@ One simple first run is:
 2. Verify Codex:
 
 ```bash
+/codex:ccv
 /codex:setup
 ```
 
@@ -301,6 +302,19 @@ Examples:
 
 Use this when Claude or Codex needs architecture context without flooding the prompt with the whole repository.
 When enabled, collaborative workflows refresh the graph after reported file changes and save compact execution memory under `graphify-out/memory/orchestration/`.
+
+### `/codex:ccv`
+
+Shows the installed plugin version, repo/marketplace metadata, active plugin cache path, and Graphify availability.
+
+Examples:
+
+```bash
+/codex:ccv
+/codex:ccv --json
+```
+
+Use this after `/reload-plugins` to confirm Claude Code is running the expected plugin version and bundle.
 
 ### `/codex:mode`
 

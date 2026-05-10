@@ -75,6 +75,7 @@ test("continue is not exposed as a user-facing command", () => {
   assert.deepEqual(commandFiles, [
     "adversarial-review.md",
     "cancel.md",
+    "ccv.md",
     "codex-inline.md",
     "debate.md",
     "graph.md",
@@ -95,6 +96,7 @@ test("collaborative commands expose pair, inline, debate, and parallel workflows
   const debate = read("commands/debate.md");
   const parallel = read("commands/parallel.md");
   const graph = read("commands/graph.md");
+  const ccv = read("commands/ccv.md");
   const mode = read("commands/mode.md");
   const readme = fs.readFileSync(path.join(ROOT, "README.md"), "utf8");
 
@@ -124,6 +126,9 @@ test("collaborative commands expose pair, inline, debate, and parallel workflows
   assert.match(parallel, /conflicting edits/i);
 
   assert.match(graph, /codex-companion\.mjs" graph "\$ARGUMENTS"/);
+  assert.match(ccv, /codex-companion\.mjs" ccv "\$ARGUMENTS"/);
+  assert.match(ccv, /plugin version/i);
+  assert.match(ccv, /Graphify/i);
   assert.match(graph, /context graph/i);
   assert.match(graph, /`config`: preview the recommended context graph config block/i);
   assert.match(graph, /`enable`: persist the recommended context graph config/i);

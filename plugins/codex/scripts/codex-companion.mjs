@@ -99,6 +99,7 @@ function printUsage() {
       "  node scripts/codex-companion.mjs debate [--claude-proposal-file <file>] [--model <model|spark>] [prompt]",
       "  node scripts/codex-companion.mjs parallel [--read-only|--full-power] [--agents codex,codex-fast] [prompt]",
       "  node scripts/codex-companion.mjs graph <status|config|enable|disable|init|update|query|explain|path|context> [args]",
+      "  node scripts/codex-companion.mjs ccv [--json]",
       "  node scripts/codex-companion.mjs mode [fast|architect|balanced] [--json]",
       "  node scripts/codex-companion.mjs status [job-id] [--all] [--json]",
       "  node scripts/codex-companion.mjs result [job-id] [--json]",
@@ -112,6 +113,14 @@ function outputResult(value, asJson) {
     console.log(JSON.stringify(value, null, 2));
   } else {
     process.stdout.write(value);
+  }
+}
+
+function readJsonFileSafe(filePath, fallback = null) {
+  try {
+    return JSON.parse(fs.readFileSync(filePath, "utf8"));
+  } catch {
+    return fallback;
   }
 }
 
@@ -1427,6 +1436,78 @@ async function handleGraphSyncWorker(argv) {
   });
 }
 
+async function handleCcv(argv) {
+  const { options } = parseCommandInput(argv, {
+    booleanOptions: ["json"]
+  });
+  const pluginRoot = ROOT_DIR;
+  const pluginManifestPath = path.join(pluginRoot, ".claude-plugin", "plugin.json");
+  const repoPackagePath = path.resolve(pluginRoot, "..", "..", "package.json");
+  const marketplacePath = path.resolve(pluginRoot, "..", "..", ".claude-plugin", "marketplace.json");
+  const pluginManifest = readJsonFileSafe(pluginManifestPath, {});
+  const repoPackage = readJsonFileSafe(repoPackagePath, {});
+  const marketplace = readJsonFileSafe(marketplacePath, {});
+  const graphifyPaths = [
+    path.join(pluginRoot, "graphify-7"),
+    path.resolve(pluginRoot, "..", "graphify-7"),
+    path.resolve(pluginRoot, "..", "..", "graphify-7")
+  ];
+  const graphifyDetectedPaths = graphifyPaths.filter((candidate) => fs.existsSync(path.join(candidate, "graphify", "__init__.py")));
+  const provider = new GraphifyContextProvider({
+    cwd: process.cwd(),
+    config: {
+      contextGraph: {
+        enabled: true
+      }
+    }
+  });
+  const runtime = await provider.checkRuntime();
+  const payload = {
+    name: pluginManifest.name ?? "codex",
+    pluginVersion: pluginManifest.version ?? null,
+    repoVersion: repoPackage.version ?? null,
+    marketplaceVersion: marketplace.version ?? marketplace.metadata?.version ?? marketplace.plugin?.version ?? marketplace.plugins?.find?.((plugin) => plugin.name === "codex")?.version ?? null,
+    pluginRoot,
+    scriptPath: fileURLToPath(import.meta.url),
+    graphifyBundled: graphifyDetectedPaths.length > 0,
+    graphifyPaths: graphifyDetectedPaths,
+    graphifyRuntimeReady: runtime.ok === true,
+    graphifyRuntime: runtime
+  };
+
+  if (options.json) {
+    outputResult(payload, true);
+    return;
+  }
+
+  const lines = [
+    "# Codex Collab Version",
+    "",
+    "[SYSTEM] Plugin Version Check",
+    "",
+    `- Plugin: ${payload.name}`,
+    `- Plugin Version: ${payload.pluginVersion ?? "unknown"}`,
+    `- Repo Package Version: ${payload.repoVersion ?? "unknown"}`,
+    `- Marketplace Version: ${payload.marketplaceVersion ?? "unknown"}`,
+    `- Plugin Root: ${payload.pluginRoot}`,
+    `- Script: ${payload.scriptPath}`,
+    `- Graphify Bundled: ${payload.graphifyBundled ? "yes" : "no"}`,
+    `- Graphify Runtime: ${payload.graphifyRuntimeReady ? "ready" : "not ready"}`
+  ];
+  if (payload.graphifyPaths.length) {
+    lines.push("- Graphify Source:");
+    for (const graphifyPath of payload.graphifyPaths) {
+      lines.push(`  - ${graphifyPath}`);
+    }
+  }
+  if (!payload.graphifyRuntimeReady) {
+    lines.push("", "Next steps:");
+    lines.push(`- Run \`${payload.graphifyRuntime.installCommand ?? 'python3 -m pip install "graphifyy[all]"'}\`.`);
+    lines.push("- Reload plugins after updating or reinstalling the marketplace package.");
+  }
+  outputResult(`${lines.join("\n").trimEnd()}\n`, false);
+}
+
 async function handleStatus(argv) {
   const { options, positionals } = parseCommandInput(argv, {
     valueOptions: ["cwd", "timeout-ms", "poll-interval-ms"],
@@ -1637,6 +1718,9 @@ async function main() {
       break;
     case "graph":
       await handleGraph(argv);
+      break;
+    case "ccv":
+      await handleCcv(argv);
       break;
     case "graph-sync-worker":
       await handleGraphSyncWorker(argv);
