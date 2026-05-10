@@ -29,6 +29,7 @@ import {
   runPairWorkflow,
   runParallelWorkflow
 } from "./lib/orchestration/workflows.mjs";
+import { buildPermissionProfile } from "./lib/orchestration/permissions.mjs";
 import { binaryAvailable, terminateProcessTree } from "./lib/process.mjs";
 import { loadPromptTemplate, interpolateTemplate } from "./lib/prompts.mjs";
 import {
@@ -85,11 +86,11 @@ function printUsage() {
       "  node scripts/codex-companion.mjs setup [--enable-review-gate|--disable-review-gate] [--json]",
       "  node scripts/codex-companion.mjs review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>]",
       "  node scripts/codex-companion.mjs adversarial-review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [focus text]",
-      "  node scripts/codex-companion.mjs task [--background] [--write] [--resume-last|--resume|--fresh] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh>] [prompt]",
-      "  node scripts/codex-companion.mjs codex-inline [--write] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh>] [prompt]",
-      "  node scripts/codex-companion.mjs pair [--write] [--claude-plan-file <file>] [--model <model|spark>] [prompt]",
+      "  node scripts/codex-companion.mjs task [--background] [--write] [--sandbox <mode>] [--approval <mode>] [--full-power] [--resume-last|--resume|--fresh] [prompt]",
+      "  node scripts/codex-companion.mjs codex-inline [--read-only|--full-power] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh>] [prompt]",
+      "  node scripts/codex-companion.mjs pair [--read-only|--full-power] [--claude-plan-file <file>] [--model <model|spark>] [prompt]",
       "  node scripts/codex-companion.mjs debate [--claude-proposal-file <file>] [--model <model|spark>] [prompt]",
-      "  node scripts/codex-companion.mjs parallel [--write] [--agents codex,codex-fast] [prompt]",
+      "  node scripts/codex-companion.mjs parallel [--read-only|--full-power] [--agents codex,codex-fast] [prompt]",
       "  node scripts/codex-companion.mjs status [job-id] [--all] [--json]",
       "  node scripts/codex-companion.mjs result [job-id] [--json]",
       "  node scripts/codex-companion.mjs cancel [job-id] [--json]"
@@ -492,13 +493,35 @@ async function executeTaskRun(request) {
     throw new Error("Provide a prompt, a prompt file, piped stdin, or use --resume-last.");
   }
 
+  const permissionProfile = request.write
+    ? buildPermissionProfile(
+        {
+          permissions: {
+            sandboxMode: request.sandboxMode,
+            approvalMode: request.approvalMode,
+            fullPower: request.fullPower
+          }
+        },
+        {
+          allowFileWrites: true,
+          sandboxMode: request.sandboxMode,
+          approvalMode: request.approvalMode,
+          fullPower: request.fullPower
+        }
+      )
+    : buildPermissionProfile(
+        { permissions: { sandboxMode: "read-only", approvalMode: request.approvalMode ?? "on-request" } },
+        { allowFileWrites: false, sandboxMode: "read-only", approvalMode: request.approvalMode }
+      );
+
   const result = await runAppServerTurn(workspaceRoot, {
     resumeThreadId,
     prompt: request.prompt,
     defaultPrompt: resumeThreadId ? DEFAULT_CONTINUE_PROMPT : "",
     model: request.model,
     effort: request.effort,
-    sandbox: request.write ? "workspace-write" : "read-only",
+    sandbox: permissionProfile.sandboxMode,
+    approvalPolicy: permissionProfile.approvalMode,
     onProgress: request.onProgress,
     persistThread: true,
     threadName: resumeThreadId ? null : buildPersistentTaskThreadName(request.prompt || DEFAULT_CONTINUE_PROMPT)
@@ -523,7 +546,8 @@ async function executeTaskRun(request) {
     threadId: result.threadId,
     rawOutput,
     touchedFiles: result.touchedFiles,
-    reasoningSummary: result.reasoningSummary
+    reasoningSummary: result.reasoningSummary,
+    permissionProfile
   };
 
   return {
@@ -614,7 +638,7 @@ function buildTaskJob(workspaceRoot, taskMetadata, write) {
   });
 }
 
-function buildTaskRequest({ cwd, model, effort, prompt, write, resumeLast, jobId }) {
+function buildTaskRequest({ cwd, model, effort, prompt, write, resumeLast, jobId, sandboxMode, approvalMode, fullPower }) {
   return {
     cwd,
     model,
@@ -622,7 +646,10 @@ function buildTaskRequest({ cwd, model, effort, prompt, write, resumeLast, jobId
     prompt,
     write,
     resumeLast,
-    jobId
+    jobId,
+    sandboxMode,
+    approvalMode,
+    fullPower
   };
 }
 
@@ -757,8 +784,8 @@ async function handleReview(argv) {
 
 async function handleTask(argv) {
   const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["model", "effort", "cwd", "prompt-file"],
-    booleanOptions: ["json", "write", "resume-last", "resume", "fresh", "background"],
+    valueOptions: ["model", "effort", "cwd", "prompt-file", "sandbox", "approval"],
+    booleanOptions: ["json", "write", "resume-last", "resume", "fresh", "background", "full-power"],
     aliasMap: {
       m: "model"
     }
@@ -776,6 +803,9 @@ async function handleTask(argv) {
     throw new Error("Choose either --resume/--resume-last or --fresh.");
   }
   const write = Boolean(options.write);
+  const sandboxMode = options.sandbox;
+  const approvalMode = options.approval;
+  const fullPower = Boolean(options["full-power"]);
   const taskMetadata = buildTaskRunMetadata({
     prompt,
     resumeLast
@@ -793,7 +823,10 @@ async function handleTask(argv) {
       prompt,
       write,
       resumeLast,
-      jobId: job.id
+      jobId: job.id,
+      sandboxMode,
+      approvalMode,
+      fullPower
     });
     const { payload } = enqueueBackgroundTask(cwd, job, request);
     outputCommandResult(payload, renderQueuedTaskLaunch(payload), options.json);
@@ -812,6 +845,9 @@ async function handleTask(argv) {
         write,
         resumeLast,
         jobId: job.id,
+        sandboxMode,
+        approvalMode,
+        fullPower,
         onProgress: progress
       }),
     { json: options.json }
@@ -900,8 +936,8 @@ async function runCollaborationCommand({ cwd, workflow, title, summary, write, r
 
 async function handleCodexInline(argv) {
   const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["model", "effort", "cwd", "prompt-file"],
-    booleanOptions: ["json", "write"],
+    valueOptions: ["model", "effort", "cwd", "prompt-file", "sandbox", "approval"],
+    booleanOptions: ["json", "write", "read-only", "full-power"],
     aliasMap: { m: "model" }
   });
   const cwd = resolveCommandCwd(options);
@@ -909,7 +945,7 @@ async function handleCodexInline(argv) {
   requireTaskRequest(task, false);
   const model = normalizeRequestedModel(options.model);
   const effort = normalizeReasoningEffort(options.effort);
-  const write = Boolean(options.write);
+  const write = !options["read-only"];
   const config = loadOrchestrationConfig(resolveWorkspaceRoot(cwd));
 
   await runCollaborationCommand({
@@ -927,6 +963,11 @@ async function handleCodexInline(argv) {
         model,
         effort,
         config,
+        permissionOptions: {
+          sandboxMode: options.sandbox,
+          approvalMode: options.approval,
+          fullPower: Boolean(options["full-power"])
+        },
         onProgress: progress
       })
   });
@@ -934,8 +975,8 @@ async function handleCodexInline(argv) {
 
 async function handlePair(argv) {
   const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["model", "effort", "cwd", "prompt-file", "claude-plan", "claude-plan-file"],
-    booleanOptions: ["json", "write"],
+    valueOptions: ["model", "effort", "cwd", "prompt-file", "claude-plan", "claude-plan-file", "sandbox", "approval"],
+    booleanOptions: ["json", "write", "read-only", "full-power"],
     aliasMap: { m: "model" }
   });
   const cwd = resolveCommandCwd(options);
@@ -947,7 +988,7 @@ async function handlePair(argv) {
   });
   const model = normalizeRequestedModel(options.model);
   const effort = normalizeReasoningEffort(options.effort);
-  const write = Boolean(options.write);
+  const write = !options["read-only"];
   const config = loadOrchestrationConfig(resolveWorkspaceRoot(cwd));
 
   await runCollaborationCommand({
@@ -966,6 +1007,11 @@ async function handlePair(argv) {
         model,
         effort,
         config,
+        permissionOptions: {
+          sandboxMode: options.sandbox,
+          approvalMode: options.approval,
+          fullPower: Boolean(options["full-power"])
+        },
         onProgress: progress
       })
   });
@@ -1010,8 +1056,8 @@ async function handleDebate(argv) {
 
 async function handleParallel(argv) {
   const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["model", "effort", "cwd", "prompt-file", "agents"],
-    booleanOptions: ["json", "write"],
+    valueOptions: ["model", "effort", "cwd", "prompt-file", "agents", "sandbox", "approval"],
+    booleanOptions: ["json", "write", "read-only", "full-power"],
     aliasMap: { m: "model" }
   });
   const cwd = resolveCommandCwd(options);
@@ -1019,7 +1065,7 @@ async function handleParallel(argv) {
   requireTaskRequest(task, false);
   const model = normalizeRequestedModel(options.model);
   const effort = normalizeReasoningEffort(options.effort);
-  const write = Boolean(options.write);
+  const write = !options["read-only"];
   const config = loadOrchestrationConfig(resolveWorkspaceRoot(cwd));
   const agents = String(options.agents ?? "")
     .split(",")
@@ -1042,6 +1088,11 @@ async function handleParallel(argv) {
         model,
         effort,
         config,
+        permissionOptions: {
+          sandboxMode: options.sandbox,
+          approvalMode: options.approval,
+          fullPower: Boolean(options["full-power"])
+        },
         onProgress: progress
       })
   });

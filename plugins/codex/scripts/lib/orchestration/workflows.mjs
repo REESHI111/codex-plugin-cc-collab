@@ -5,6 +5,7 @@ import {
   buildParallelAgentPrompt
 } from "./prompts.mjs";
 import { createExecutor } from "./executors.mjs";
+import { buildPermissionProfile } from "./permissions.mjs";
 
 function firstLine(text, fallback) {
   return (
@@ -38,17 +39,23 @@ function normalizeCodexResult(result, label) {
     turnId: result.turnId ?? null,
     rawOutput: result.finalMessage ?? "",
     reasoningSummary: result.reasoningSummary ?? [],
-    touchedFiles: result.touchedFiles ?? []
+    touchedFiles: result.touchedFiles ?? [],
+    permissionProfile: result.permissionProfile ?? null,
+    permissionIssue: result.permissionIssue ?? null
   };
 }
 
-export async function runCodexInlineWorkflow({ cwd, task, write, model, effort, config, onProgress }) {
+export async function runCodexInlineWorkflow({ cwd, task, write = true, model, effort, config, permissionOptions, onProgress }) {
   const providerId = config.routing?.implementer ?? "codex";
   const provider = getProvider(config, providerId);
   const executor = createExecutor(providerId, provider);
   const prompt = buildCodexInlinePrompt({
     task,
     strategyName: config.prompting?.strategy === "rigorous" ? "concise" : "fast"
+  });
+  const permissionProfile = buildPermissionProfile(config, {
+    allowFileWrites: write !== false,
+    ...permissionOptions
   });
 
   onProgress?.({ message: `[CODEX] Implementing directly.`, phase: "implementing" });
@@ -60,6 +67,8 @@ export async function runCodexInlineWorkflow({ cwd, task, write, model, effort, 
       model,
       effort,
       onProgress,
+      config,
+      permissionProfile,
       persistThread: true,
       threadName: `Codex Inline: ${firstLine(task, "task")}`,
       ...buildExecutionOptions(config)
@@ -73,7 +82,7 @@ export async function runCodexInlineWorkflow({ cwd, task, write, model, effort, 
   };
 }
 
-export async function runPairWorkflow({ cwd, task, claudePlan, write, model, effort, config, onProgress }) {
+export async function runPairWorkflow({ cwd, task, claudePlan, write = true, model, effort, config, permissionOptions, onProgress }) {
   if (!claudePlan?.trim()) {
     throw new Error("Pair workflow requires --claude-plan or piped Claude plan text.");
   }
@@ -87,6 +96,11 @@ export async function runPairWorkflow({ cwd, task, claudePlan, write, model, eff
     strategyName: config.prompting?.strategy ?? "concise"
   });
 
+  const permissionProfile = buildPermissionProfile(config, {
+    allowFileWrites: write !== false,
+    ...permissionOptions
+  });
+
   onProgress?.({ message: `[CODEX] Implementing Claude's plan.`, phase: "implementing" });
   const result = await executor.executeTask(
     { prompt },
@@ -96,6 +110,8 @@ export async function runPairWorkflow({ cwd, task, claudePlan, write, model, eff
       model,
       effort,
       onProgress,
+      config,
+      permissionProfile,
       persistThread: true,
       threadName: `Pair: ${firstLine(task, "collaborative task")}`,
       ...buildExecutionOptions(config)
@@ -134,6 +150,11 @@ export async function runDebateWorkflow({ cwd, task, claudeProposal, model, effo
       model,
       effort,
       onProgress,
+      config,
+      permissionProfile: buildPermissionProfile(config, {
+        allowFileWrites: false,
+        sandboxMode: "read-only"
+      }),
       persistThread: false,
       threadName: `Debate: ${firstLine(task, "decision")}`,
       ...buildExecutionOptions(config)
@@ -149,11 +170,16 @@ export async function runDebateWorkflow({ cwd, task, claudeProposal, model, effo
   };
 }
 
-export async function runParallelWorkflow({ cwd, task, agents, write, model, effort, config, onProgress }) {
+export async function runParallelWorkflow({ cwd, task, agents, write = true, model, effort, config, permissionOptions, onProgress }) {
   const configuredAgents = agents?.length ? agents : config.execution?.parallelAgents ?? ["codex"];
   const uniqueAgents = [...new Set(configuredAgents)];
   if (uniqueAgents.length === 0) {
     throw new Error("Parallel workflow requires at least one agent.");
+  }
+  if (write !== false && uniqueAgents.length > 1 && config.execution?.allowConcurrentWrites !== true) {
+    throw new Error(
+      "Parallel write mode with multiple agents is disabled to avoid conflicting edits. Use --read-only, run one writer, or set execution.allowConcurrentWrites=true."
+    );
   }
 
   const runs = uniqueAgents.map(async (providerId) => {
@@ -164,6 +190,10 @@ export async function runParallelWorkflow({ cwd, task, agents, write, model, eff
       agentLabel: executor.label,
       strategyName: config.prompting?.strategy ?? "concise"
     });
+    const permissionProfile = buildPermissionProfile(config, {
+      allowFileWrites: write !== false,
+      ...permissionOptions
+    });
     onProgress?.({ message: `[${executor.label.toUpperCase()}] Running parallel agent.`, phase: "parallel" });
     const result = await executor.executeTask(
       { prompt },
@@ -173,6 +203,8 @@ export async function runParallelWorkflow({ cwd, task, agents, write, model, eff
         model: providerId === "codex" ? model : provider.model,
         effort: providerId === "codex" ? effort : provider.effort,
         onProgress,
+        config,
+        permissionProfile,
         persistThread: true,
         threadName: `Parallel ${executor.label}: ${firstLine(task, "task")}`,
         ...buildExecutionOptions(config)

@@ -33,6 +33,13 @@ export const DEFAULT_ORCHESTRATION_CONFIG = {
     retries: 0,
     parallelAgents: ["codex"]
   },
+  permissions: {
+    sandboxMode: "workspace-write",
+    approvalMode: "on-request",
+    allowFileWrites: true,
+    allowGitOperations: true,
+    fullPower: false
+  },
   prompting: {
     strategy: "concise"
   },
@@ -100,6 +107,10 @@ export function summarizeOrchestrationConfig(config) {
     timeoutMs: config.execution?.timeoutMs ?? 0,
     retries: config.execution?.retries ?? 0,
     parallelAgents: config.execution?.parallelAgents ?? [],
+    sandboxMode: config.permissions?.sandboxMode ?? "workspace-write",
+    approvalMode: config.permissions?.approvalMode ?? "on-request",
+    allowFileWrites: config.permissions?.allowFileWrites !== false,
+    allowGitOperations: config.permissions?.allowGitOperations !== false,
     promptStrategy: config.prompting?.strategy ?? "concise"
   };
 }

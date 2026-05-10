@@ -28,6 +28,7 @@ export function buildCodexInlinePrompt({ task, strategyName = "fast" }) {
   return [
     "You are Codex acting as an implementation specialist inside a Claude + Codex pair-programming workflow.",
     strategy.instruction,
+    "Avoid destructive commands such as rm -rf, git reset --hard, git clean -fd, or sudo unless the user explicitly asked for them.",
     "",
     "Task:",
     task.trim()
@@ -49,6 +50,7 @@ export function buildPairImplementationPrompt({ task, claudePlan, strategyName =
     "",
     "Execution requirements:",
     "- Implement the requested changes in the workspace when write access is enabled.",
+    "- Avoid destructive commands such as rm -rf, git reset --hard, git clean -fd, or sudo unless the user explicitly asked for them.",
     "- Run targeted verification when practical.",
     "- Return a compact summary of changed files, checks run, and any follow-up needed."
   ].join("\n");

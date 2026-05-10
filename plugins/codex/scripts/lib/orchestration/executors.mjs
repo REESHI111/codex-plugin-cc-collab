@@ -1,4 +1,9 @@
 import { runAppServerTurn } from "../codex.mjs";
+import {
+  buildPermissionProfile,
+  describePermissionProfile,
+  detectPermissionIssue
+} from "./permissions.mjs";
 
 export class ModelExecutor {
   constructor(config = {}) {
@@ -104,15 +109,31 @@ export class CodexExecutor extends ModelExecutor {
 
     const model = options.model ?? this.config.model ?? null;
     const effort = options.effort ?? this.config.effort ?? null;
-    const write = Boolean(options.write);
+    const permissionProfile =
+      options.permissionProfile ??
+      buildPermissionProfile(options.config ?? {}, {
+        allowFileWrites: options.write !== false,
+        sandboxMode: options.sandboxMode,
+        approvalMode: options.approvalMode,
+        fullPower: options.fullPower
+      });
+    const write = Boolean(options.write) && permissionProfile.allowFileWrites;
 
-    return runWithRetry(
+    for (const line of describePermissionProfile(permissionProfile)) {
+      options.onProgress?.({ message: line, phase: "permissions" });
+    }
+    for (const warning of permissionProfile.warnings) {
+      options.onProgress?.({ message: `[SYSTEM] ${warning}`, phase: "permissions" });
+    }
+
+    const result = await runWithRetry(
       () =>
         runAppServerTurn(options.cwd, {
           prompt,
           model,
           effort,
-          sandbox: write ? "workspace-write" : "read-only",
+          sandbox: write ? permissionProfile.sandboxMode : "read-only",
+          approvalPolicy: permissionProfile.approvalMode,
           onProgress: options.onProgress,
           persistThread: Boolean(options.persistThread),
           threadName: options.threadName ?? null
@@ -124,6 +145,16 @@ export class CodexExecutor extends ModelExecutor {
         label: this.label
       }
     );
+    const permissionIssue = detectPermissionIssue(
+      [result.finalMessage, result.stderr, result.error?.message].filter(Boolean).join("\n"),
+      permissionProfile
+    );
+    if (permissionIssue) {
+      options.onProgress?.({ message: permissionIssue.message, phase: "permissions" });
+      result.permissionIssue = permissionIssue;
+    }
+    result.permissionProfile = permissionProfile;
+    return result;
   }
 }
 

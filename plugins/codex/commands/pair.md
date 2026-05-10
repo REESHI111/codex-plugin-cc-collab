@@ -1,6 +1,6 @@
 ---
 description: Pair Claude architecture and review with Codex implementation
-argument-hint: '[--write] [--model <model|spark>] [--effort none|minimal|low|medium|high|xhigh] [task ...]'
+argument-hint: '[--read-only|--full-power] [--model <model|spark>] [--effort none|minimal|low|medium|high|xhigh] [task ...]'
 allowed-tools: Read, Glob, Grep, Bash
 ---
 
@@ -20,7 +20,9 @@ Claude planning rules:
 - Keep the plan concise and actionable.
 - Do not implement code yourself before Codex runs unless Codex fails to start.
 - Do not duplicate long reasoning in the final answer.
-- Prefer `--write` when the user wants changes applied.
+- By default, implementation runs in safe write mode: workspace-write sandbox with on-request approvals.
+- Use `--read-only` only when the user wants planning or analysis without edits.
+- Use `--full-power` only when unrestricted execution is explicitly requested for a trusted repository.
 
 Execution pattern:
 

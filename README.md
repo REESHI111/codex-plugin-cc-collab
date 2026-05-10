@@ -178,11 +178,13 @@ Runs the collaborative pair-programming workflow:
 Examples:
 
 ```bash
-/codex:pair --write add optimistic updates to the task list
-/codex:pair --write --model gpt-5.4-mini refactor the settings page into smaller components
+/codex:pair add optimistic updates to the task list
+/codex:pair --model gpt-5.4-mini refactor the settings page into smaller components
+/codex:pair --read-only plan the refactor without editing files
 ```
 
 Use this when the task benefits from both architectural judgment and direct workspace edits.
+Collaborative implementation commands default to safe write mode: `sandbox=workspace-write` and `approval=on-request`.
 
 ### `/codex:codex-inline`
 
@@ -191,8 +193,9 @@ Bypasses the heavier planning and review loop and sends the task straight to Cod
 Examples:
 
 ```bash
-/codex:codex-inline --write generate the migration for the new audit table
-/codex:codex-inline --write convert these tests from callbacks to async/await
+/codex:codex-inline generate the migration for the new audit table
+/codex:codex-inline convert these tests from callbacks to async/await
+/codex:codex-inline --read-only inspect where this component should live
 ```
 
 Use this for boilerplate, repetitive edits, simple components, migrations, and narrow refactors.
@@ -222,10 +225,11 @@ Examples:
 
 ```bash
 /codex:parallel investigate the flaky checkout test
-/codex:parallel --agents codex,codex-fast compare fixes for the API timeout
+/codex:parallel --read-only --agents codex,codex-fast compare fixes for the API timeout
 ```
 
 Use this when you want independent attempts or comparisons before choosing an implementation.
+Only one writer is allowed by default. Multiple parallel writers are blocked unless you explicitly set `execution.allowConcurrentWrites=true`.
 
 ### `/codex:status`
 
@@ -334,7 +338,15 @@ Add `codex-companion.config.json` at the workspace root, or `.codex-companion/co
   "execution": {
     "timeoutMs": 600000,
     "retries": 1,
-    "parallelAgents": ["codex", "codex-fast"]
+    "parallelAgents": ["codex", "codex-fast"],
+    "allowConcurrentWrites": false
+  },
+  "permissions": {
+    "sandboxMode": "workspace-write",
+    "approvalMode": "on-request",
+    "allowFileWrites": true,
+    "allowGitOperations": true,
+    "fullPower": false
   },
   "prompting": {
     "strategy": "concise"
@@ -343,6 +355,61 @@ Add `codex-companion.config.json` at the workspace root, or `.codex-companion/co
 ```
 
 Configuration is additive; omitting a field keeps the built-in default.
+
+## Permission Modes
+
+The recommended collaborative default is safe write mode:
+
+- `sandboxMode: "workspace-write"`
+- `approvalMode: "on-request"`
+- `allowFileWrites: true`
+
+This lets Codex create and edit files in the workspace while still requiring approval for guarded or destructive operations.
+
+Read-only mode is still available:
+
+```json
+{
+  "permissions": {
+    "sandboxMode": "read-only",
+    "allowFileWrites": false
+  }
+}
+```
+
+Full power mode is available only by explicit opt-in:
+
+```json
+{
+  "permissions": {
+    "sandboxMode": "full-access",
+    "approvalMode": "never",
+    "allowFileWrites": true,
+    "fullPower": true
+  }
+}
+```
+
+> [!WARNING]
+> Full power mode disables sandbox restrictions. Use it only in trusted repositories and never enable it silently for other users.
+
+Each Codex implementation run logs the current execution capability:
+
+```text
+[SYSTEM] Sandbox Mode: workspace-write
+[SYSTEM] Approval Mode: on-request
+[SYSTEM] Write Access: ENABLED
+```
+
+If Codex reports that it could not create or edit files because the sandbox is read-only or approvals are disabled, the orchestrator adds a permission diagnostic with the corrective action.
+
+Troubleshooting:
+
+- If file creation fails, confirm `sandboxMode` is `workspace-write`.
+- If guarded commands fail, use `approvalMode: "on-request"`.
+- If package installs are denied, keep the default and approve only the specific install command you trust.
+- If git commands fail, check repository filesystem permissions and `allowGitOperations`.
+- If multiple parallel agents need to edit files, prefer one writer and run the others with `--read-only`.
 
 ## Migration Notes
 

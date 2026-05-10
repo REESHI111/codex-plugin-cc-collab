@@ -188,6 +188,7 @@ export function renderSetupReport(report) {
     `- session runtime: ${report.sessionRuntime.label}`,
     `- review gate: ${report.reviewGateEnabled ? "enabled" : "disabled"}`,
     `- orchestration: ${report.orchestration?.defaultWorkflow ?? "pair"} (${(report.orchestration?.providers ?? []).join(", ") || "default providers"})`,
+    `- permissions: sandbox=${report.orchestration?.sandboxMode ?? "workspace-write"}, approval=${report.orchestration?.approvalMode ?? "on-request"}, writes=${report.orchestration?.allowFileWrites === false ? "disabled" : "enabled"}`,
     ""
   ];
 
@@ -347,6 +348,7 @@ export function renderCollaborationResult(result) {
   if (result.workflow === "pair") {
     appendModelBlock(lines, "Claude Plan", result.claudePlan);
     appendModelBlock(lines, "Codex Implementation", result.codex?.rawOutput);
+    appendModelBlock(lines, "Permission Diagnostic", result.codex?.permissionIssue?.message);
     if (result.codex?.touchedFiles?.length) {
       lines.push("", "Touched files:");
       for (const file of result.codex.touchedFiles) {
@@ -360,6 +362,7 @@ export function renderCollaborationResult(result) {
     for (const output of result.outputs ?? []) {
       const statusLabel = output.ok ? "completed" : "failed";
       appendModelBlock(lines, `${output.label ?? output.providerId} (${statusLabel})`, output.rawOutput);
+      appendModelBlock(lines, `${output.label ?? output.providerId} Permission Diagnostic`, output.permissionIssue?.message);
       if (output.touchedFiles?.length) {
         lines.push("", `Touched files from ${output.label ?? output.providerId}:`);
         for (const file of output.touchedFiles) {

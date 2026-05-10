@@ -98,11 +98,15 @@ test("collaborative commands expose pair, inline, debate, and parallel workflows
   assert.match(pair, /Codex implements the plan/i);
   assert.match(pair, /Claude reviews the Codex output/i);
   assert.match(pair, /codex-companion\.mjs" pair --claude-plan-file/);
+  assert.match(pair, /workspace-write sandbox with on-request approvals/i);
+  assert.match(pair, /--read-only/i);
+  assert.match(pair, /--full-power/i);
   assert.match(pair, /\[CLAUDE\]/);
   assert.match(pair, /\[CODEX\]/);
 
   assert.match(inline, /codex-companion\.mjs" codex-inline "\$ARGUMENTS"/);
   assert.match(inline, /fast Codex implementation pass/i);
+  assert.match(inline, /workspace-write sandbox with on-request approvals/i);
   assert.match(inline, /Return the command stdout verbatim/i);
 
   assert.match(debate, /Claude proposes a solution/i);
@@ -113,6 +117,7 @@ test("collaborative commands expose pair, inline, debate, and parallel workflows
   assert.match(parallel, /codex-companion\.mjs" parallel "\$ARGUMENTS"/);
   assert.match(parallel, /multi-agent workflow/i);
   assert.match(parallel, /--agents codex,codex-fast/);
+  assert.match(parallel, /conflicting edits/i);
 
   assert.match(readme, /### `\/codex:pair`/);
   assert.match(readme, /### `\/codex:codex-inline`/);
@@ -120,6 +125,9 @@ test("collaborative commands expose pair, inline, debate, and parallel workflows
   assert.match(readme, /### `\/codex:parallel`/);
   assert.match(readme, /ModelExecutor/);
   assert.match(readme, /codex-companion\.config\.json/);
+  assert.match(readme, /sandboxMode": "workspace-write/);
+  assert.match(readme, /approvalMode": "on-request/);
+  assert.match(readme, /Full power mode disables sandbox restrictions/i);
 });
 
 test("rescue command absorbs continue semantics", () => {
