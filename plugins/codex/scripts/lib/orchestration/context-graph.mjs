@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
 import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
 import { runCommand } from "../process.mjs";
 
@@ -12,6 +13,10 @@ const DEFAULT_MEMORY_TOKEN_BUDGET = 1000;
 const DEFAULT_MEMORY_LIMIT = 3;
 const DEFAULT_LOCK_STALE_MS = 10 * 60 * 1000;
 const SUPPORTED_PROVIDERS = new Set(["graphify"]);
+const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
+const PLUGIN_ROOT = path.resolve(MODULE_DIR, "../../../..");
+const GRAPHIFY_INSTALL_COMMAND = 'python3 -m pip install "graphifyy[all]"';
+const GRAPHIFY_MINIMAL_INSTALL_COMMAND = "python3 -m pip install graphifyy networkx tree_sitter";
 
 export function buildRecommendedContextGraphConfig(overrides = {}) {
   return {
@@ -87,6 +92,19 @@ function configuredGraphifyArgs(config = {}) {
   return ["-m", "graphify"];
 }
 
+function configuredPythonPaths(cwd, config = {}) {
+  const configured = config.contextGraph?.pythonPath ?? config.contextGraph?.pythonPaths ?? [];
+  const configuredPaths = Array.isArray(configured) ? configured : [configured];
+  return unique([
+    ...configuredPaths,
+    path.join(cwd, "graphify-7"),
+    path.join(PLUGIN_ROOT, "graphify-7"),
+    path.resolve(PLUGIN_ROOT, "..", "graphify-7"),
+    path.resolve(PLUGIN_ROOT, "..", "..", "graphify-7"),
+    path.join(PLUGIN_ROOT, "vendor", "graphify-7")
+  ]).map((entry) => (path.isAbsolute(entry) ? entry : path.join(cwd, entry)));
+}
+
 function isEnabled(config = {}) {
   return config.contextGraph?.enabled === true;
 }
@@ -117,7 +135,16 @@ function writeJsonAtomic(filePath, value) {
   fs.renameSync(tmpPath, filePath);
 }
 
-function buildPythonGraphQueryScript({ graphPath, action, query, source, target, tokenBudget, depth }) {
+function buildPythonPathBootstrap(pythonPaths = []) {
+  return `
+for candidate in ${JSON.stringify(pythonPaths)}:
+    path = Path(candidate).expanduser()
+    if path.exists():
+        sys.path.insert(0, str(path))
+`;
+}
+
+function buildPythonGraphQueryScript({ graphPath, action, query, source, target, tokenBudget, depth, pythonPaths = [] }) {
   const payload = {
     graphPath,
     action,
@@ -134,10 +161,7 @@ from pathlib import Path
 from networkx.readwrite import json_graph
 
 payload = ${JSON.stringify(payload)}
-root = Path.cwd()
-vendored = root / "graphify-7"
-if vendored.exists():
-    sys.path.insert(0, str(vendored))
+${buildPythonPathBootstrap(pythonPaths)}
 
 try:
     from graphify.serve import _find_node, _query_graph_text, _score_nodes
@@ -215,17 +239,14 @@ else:
 `;
 }
 
-function buildPythonRuntimeCheckScript() {
+function buildPythonRuntimeCheckScript({ pythonPaths = [] } = {}) {
   return `
 import importlib
 import json
 import sys
 from pathlib import Path
 
-root = Path.cwd()
-vendored = root / "graphify-7"
-if vendored.exists():
-    sys.path.insert(0, str(vendored))
+${buildPythonPathBootstrap(pythonPaths)}
 
 modules = ["graphify", "networkx", "tree_sitter"]
 checks = {}
@@ -681,35 +702,48 @@ export class GraphifyContextProvider extends ContextGraphProvider {
     return graphPathFromConfig(this.cwd, this.config);
   }
 
+  get outDir() {
+    return path.dirname(this.graphPath);
+  }
+
   get reportPath() {
     return reportPathFromGraphPath(this.graphPath);
   }
 
   get memoryDir() {
-    return path.join(path.dirname(this.graphPath), "memory", "orchestration");
+    return path.join(this.outDir, "memory", "orchestration");
   }
 
   get lockPath() {
-    return path.join(path.dirname(this.graphPath), ".codex-graph-update.lock");
+    return path.join(this.outDir, ".codex-graph-update.lock");
   }
 
   get pendingUpdatesPath() {
-    return path.join(path.dirname(this.graphPath), "pending-updates.json");
+    return path.join(this.outDir, "pending-updates.json");
   }
 
   get command() {
     return configuredGraphifyCommand(this.config);
   }
 
+  get pythonPaths() {
+    return configuredPythonPaths(this.cwd, this.config);
+  }
+
   get env() {
     return {
       ...process.env,
       PYTHONPATH: [
-        path.join(this.cwd, "graphify-7"),
+        ...this.pythonPaths,
         process.env.PYTHONPATH
       ].filter(Boolean).join(path.delimiter),
-      GRAPHIFY_OUT: path.dirname(this.graphPath)
+      GRAPHIFY_OUT: this.outDir
     };
+  }
+
+  ensureStorage() {
+    fs.mkdirSync(this.outDir, { recursive: true });
+    fs.mkdirSync(this.memoryDir, { recursive: true });
   }
 
   async getStatus() {
@@ -752,7 +786,7 @@ export class GraphifyContextProvider extends ContextGraphProvider {
 
   async checkRuntime() {
     const python = this.config.contextGraph?.pythonCommand ?? "python3";
-    const result = runCommand(python, ["-c", buildPythonRuntimeCheckScript()], {
+    const result = runCommand(python, ["-c", buildPythonRuntimeCheckScript({ pythonPaths: this.pythonPaths })], {
       cwd: this.cwd,
       env: this.env,
       maxBuffer: 1024 * 1024
@@ -762,6 +796,8 @@ export class GraphifyContextProvider extends ContextGraphProvider {
         ok: false,
         command: python,
         error: result.error.message,
+        installCommand: GRAPHIFY_INSTALL_COMMAND,
+        minimalInstallCommand: GRAPHIFY_MINIMAL_INSTALL_COMMAND,
         checks: {}
       };
     }
@@ -770,16 +806,21 @@ export class GraphifyContextProvider extends ContextGraphProvider {
         ok: false,
         command: python,
         error: result.stderr.trim() || result.stdout.trim() || `python exited ${result.status}`,
+        installCommand: GRAPHIFY_INSTALL_COMMAND,
+        minimalInstallCommand: GRAPHIFY_MINIMAL_INSTALL_COMMAND,
         checks: {}
       };
     }
     return {
       command: python,
+      installCommand: GRAPHIFY_INSTALL_COMMAND,
+      minimalInstallCommand: GRAPHIFY_MINIMAL_INSTALL_COMMAND,
       ...parsePythonJson(result)
     };
   }
 
   async bootstrap(options = {}) {
+    this.ensureStorage();
     const before = await this.getStatus();
     const runtime = await this.checkRuntime();
     const shouldBuild = options.force === true || !before.graphExists;
@@ -804,7 +845,8 @@ export class GraphifyContextProvider extends ContextGraphProvider {
           after: before,
           configEnabled: options.configEnabled ?? isEnabled(this.config),
           nextSteps: [
-            "Install Graphify Python dependencies before running graph rebuilds or live updates.",
+            `Install Graphify Python dependencies with \`${GRAPHIFY_INSTALL_COMMAND}\`.`,
+            `If extras are blocked, use \`${GRAPHIFY_MINIMAL_INSTALL_COMMAND}\` first.`,
             "Set `contextGraph.enabled` to `true` in `codex-companion.config.json` if prompt injection is not enabled yet."
           ],
           detail: "Context graph is usable, but Graphify rebuild dependencies are incomplete."
@@ -822,7 +864,8 @@ export class GraphifyContextProvider extends ContextGraphProvider {
         after: before,
         configEnabled: isEnabled(this.config),
         nextSteps: [
-          "Install Graphify Python dependencies for this environment.",
+          `Install Graphify Python dependencies with \`${GRAPHIFY_INSTALL_COMMAND}\`.`,
+          `If extras are blocked, use \`${GRAPHIFY_MINIMAL_INSTALL_COMMAND}\` first.`,
           "Then rerun `/codex:graph init`."
         ],
         detail: "Context graph bootstrap could not start because runtime checks failed."
@@ -1209,6 +1252,7 @@ export class GraphifyContextProvider extends ContextGraphProvider {
     }
     const script = buildPythonGraphQueryScript({
       graphPath: this.graphPath,
+      pythonPaths: this.pythonPaths,
       ...request
     });
     const python = this.config.contextGraph?.pythonCommand ?? "python3";

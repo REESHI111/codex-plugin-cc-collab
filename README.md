@@ -108,7 +108,14 @@ One simple first run is:
 4. If `/codex:graph init` reports missing Python dependencies, install Graphify's Python dependencies in the environment that runs Claude Code/Codex, then rerun:
 
 ```bash
+python3 -m pip install "graphifyy[all]"
 /codex:graph init --force
+```
+
+If your Python environment rejects optional extras, install the minimum runtime first:
+
+```bash
+python3 -m pip install graphifyy networkx tree_sitter
 ```
 
 5. Confirm the main collaborative commands:
@@ -496,13 +503,14 @@ The context graph layer is optional and disabled by default for compatibility. E
 }
 ```
 
-The adapter defaults to the vendored `graphify-7` package through `python3 -m graphify`, so a local checkout can use Graphify without requiring a global `graphify` binary. If your environment uses a different install, set `contextGraph.command` and `contextGraph.commandArgs`.
+The adapter defaults to `python3 -m graphify`. In a development checkout it also adds local Graphify source folders such as `graphify-7` to `PYTHONPATH`; in an installed Claude plugin, install the published Python package with `python3 -m pip install "graphifyy[all]"`. The PyPI package is named `graphifyy`, while the Python module and CLI remain `graphify`. If your environment uses a different install, set `contextGraph.command`, `contextGraph.commandArgs`, or `contextGraph.pythonPath`.
 
 Graphify runtime notes:
 
 - Existing `graph.json` files can still be queried through the built-in JavaScript fallback even when Python graph dependencies are unavailable.
-- Building or updating a graph requires Graphify's Python dependencies, especially `networkx` and `tree_sitter`.
-- `/codex:graph init` checks those dependencies and reports exactly what is missing.
+- Building or updating a graph requires Graphify's Python dependencies. Recommended install: `python3 -m pip install "graphifyy[all]"`.
+- `/codex:graph init` creates `graphify-out/` and `graphify-out/memory/orchestration/`, checks dependencies, and reports exactly what is missing.
+- If you rely on the bundled Graphify source during development or marketplace publishing, keep `graphify-7/` committed and do not ignore it.
 - `/codex:graph enable` changes plugin state only; it does not delete or rewrite existing graph files.
 - `/codex:graph disable` turns off prompt injection and memory retrieval without removing `graphify-out`.
 

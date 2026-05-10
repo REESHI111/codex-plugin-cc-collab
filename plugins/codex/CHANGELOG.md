@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.1.2
+
+- Bundled Graphify-7 source for easier marketplace installation
+- Updated documentation with first-run checklist and dependency guide
+- Improved context graph bootstrap and config diagnostics
+
 ## 2.1.0
 
 - Added Graphify-backed context graph memory with `/codex:graph`

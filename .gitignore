@@ -45,8 +45,7 @@ jspm_packages/
 web_modules/
 
 # Graphify
-graphify/
-graphify-7/
+graphify-out/
 
 # TypeScript cache
 *.tsbuildinfo

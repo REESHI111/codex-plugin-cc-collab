@@ -342,3 +342,25 @@ test("Graphify bootstrap reports ready when graph already exists", async () => {
   assert.equal(result.build.skipped, true);
   assert.equal(result.after.graphExists, true);
 });
+
+test("Graphify bootstrap creates storage and reports graphifyy install command when runtime is missing", async () => {
+  const cwd = makeTempDir();
+  const provider = new GraphifyContextProvider({
+    cwd,
+    config: {
+      contextGraph: {
+        enabled: true,
+        graphPath: "graphify-out/graph.json",
+        pythonCommand: "missing-python-for-graphify-test"
+      }
+    }
+  });
+
+  const result = await provider.bootstrap();
+
+  assert.equal(result.ok, false);
+  assert.equal(fs.existsSync(path.join(cwd, "graphify-out")), true);
+  assert.equal(fs.existsSync(path.join(cwd, "graphify-out", "memory", "orchestration")), true);
+  assert.match(result.runtime.installCommand, /graphifyy/);
+  assert.match(result.nextSteps.join("\n"), /graphifyy/);
+});
