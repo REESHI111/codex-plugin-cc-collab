@@ -15,6 +15,7 @@ they already have.
 - `/codex:codex-inline` for fast direct Codex implementation
 - `/codex:debate` for Claude and Codex tradeoff comparison
 - `/codex:parallel` for configurable multi-agent runs
+- `/codex:graph` for Graphify-backed context graph queries and runtime memory status
 - `/codex:mode` to switch between fast, balanced, and architect orchestration
 - `/codex:rescue`, `/codex:status`, `/codex:result`, and `/codex:cancel` to delegate work and manage background jobs
 
@@ -77,6 +78,45 @@ One simple first run is:
 /codex:review --background
 /codex:status
 /codex:result
+```
+
+## First-Run Checklist
+
+1. Add and install the plugin:
+
+```bash
+/plugin marketplace add REESHI111/codex-plugin-cc-collab
+/plugin install codex@codex-collab
+/reload-plugins
+```
+
+2. Verify Codex:
+
+```bash
+/codex:setup
+```
+
+3. Enable collaborative memory mode when you want Graphify context:
+
+```bash
+/codex:graph config
+/codex:graph enable
+/codex:graph init
+/codex:graph status
+```
+
+4. If `/codex:graph init` reports missing Python dependencies, install Graphify's Python dependencies in the environment that runs Claude Code/Codex, then rerun:
+
+```bash
+/codex:graph init --force
+```
+
+5. Confirm the main collaborative commands:
+
+```bash
+/codex:mode balanced
+/codex:codex-inline --read-only inspect the project structure
+/codex:pair --read-only plan a small safe refactor
 ```
 
 ## Usage
@@ -234,6 +274,27 @@ Examples:
 Use this when you want independent attempts or comparisons before choosing an implementation.
 Only one writer is allowed by default. Multiple parallel writers are blocked unless you explicitly set `execution.allowConcurrentWrites=true`.
 
+### `/codex:graph`
+
+Queries the optional Graphify-backed context graph. This is the foundation for long-running architecture memory and selective context retrieval.
+
+Examples:
+
+```bash
+/codex:graph status
+/codex:graph config
+/codex:graph enable
+/codex:graph init
+/codex:graph update
+/codex:graph query auth flow
+/codex:graph explain UserService
+/codex:graph path UserService DatabasePool
+/codex:graph context current checkout bug
+```
+
+Use this when Claude or Codex needs architecture context without flooding the prompt with the whole repository.
+When enabled, collaborative workflows refresh the graph after reported file changes and save compact execution memory under `graphify-out/memory/orchestration/`.
+
 ### `/codex:mode`
 
 Switches the orchestration mode used by collaborative workflows.
@@ -269,6 +330,7 @@ Use it to:
 - see the latest completed job
 - confirm whether a task is still running
 - inspect sandbox, approvals, write access, executor availability, current workflow, and current mode
+- inspect context graph provider availability, graph path, node count, and edge count
 
 ### `/codex:result`
 
@@ -323,6 +385,7 @@ Collaborative features are added as extension layers:
 - `plugins/codex/scripts/lib/orchestration/executors.mjs` defines the `ModelExecutor` abstraction plus `CodexExecutor` and command-side `ClaudeExecutor`
 - `plugins/codex/scripts/lib/orchestration/prompts.mjs` contains configurable prompt strategies
 - `plugins/codex/scripts/lib/orchestration/workflows.mjs` implements `pair`, `codex-inline`, `debate`, and `parallel`
+- `plugins/codex/scripts/lib/orchestration/context-graph.mjs` defines the context graph provider adapter used for Graphify-backed project memory
 
 `ModelExecutor` is intentionally provider-neutral. Future executors such as Gemini, OpenRouter, Ollama, DeepSeek, or local models can implement the same methods:
 
@@ -384,6 +447,32 @@ Add `codex-companion.config.json` at the workspace root, or `.codex-companion/co
     "allowGitOperations": true,
     "fullPower": false
   },
+  "contextGraph": {
+    "enabled": false,
+    "provider": "graphify",
+    "outputDir": "graphify-out",
+    "graphPath": "graphify-out/graph.json",
+    "updateStrategy": "workflow-end",
+    "updateTimeoutMs": 120000,
+    "backgroundSync": true,
+    "lockUpdates": true,
+    "staleLockMs": 600000,
+    "recordPendingUpdates": true,
+    "queryTokenBudget": 2000,
+    "queryDepth": 2,
+    "injectIntoPrompts": true,
+    "promptTokenBudget": 2000,
+    "promptQueryDepth": 2,
+    "tokenBudgetByMode": {
+      "fast": 1200,
+      "balanced": 2000,
+      "architect": 4000
+    },
+    "memoryRetrieval": true,
+    "maxMemoryEntries": 3,
+    "memoryTokenBudget": 1000,
+    "saveExecutionMemory": true
+  },
   "prompting": {
     "strategy": "concise"
   }
@@ -391,6 +480,49 @@ Add `codex-companion.config.json` at the workspace root, or `.codex-companion/co
 ```
 
 Configuration is additive; omitting a field keeps the built-in default.
+
+## Context Graph Memory
+
+The context graph layer is optional and disabled by default for compatibility. Enable it when you want Graphify to act as the runtime's semantic project memory:
+
+```json
+{
+  "contextGraph": {
+    "enabled": true,
+    "provider": "graphify",
+    "graphPath": "graphify-out/graph.json",
+    "updateStrategy": "workflow-end"
+  }
+}
+```
+
+The adapter defaults to the vendored `graphify-7` package through `python3 -m graphify`, so a local checkout can use Graphify without requiring a global `graphify` binary. If your environment uses a different install, set `contextGraph.command` and `contextGraph.commandArgs`.
+
+Graphify runtime notes:
+
+- Existing `graph.json` files can still be queried through the built-in JavaScript fallback even when Python graph dependencies are unavailable.
+- Building or updating a graph requires Graphify's Python dependencies, especially `networkx` and `tree_sitter`.
+- `/codex:graph init` checks those dependencies and reports exactly what is missing.
+- `/codex:graph enable` changes plugin state only; it does not delete or rewrite existing graph files.
+- `/codex:graph disable` turns off prompt injection and memory retrieval without removing `graphify-out`.
+
+Current behavior:
+
+- `/codex:graph status` reports provider availability and graph freshness
+- `/codex:graph config` previews the recommended memory-mode config
+- `/codex:graph enable` persists the recommended config through the plugin state config
+- `/codex:graph disable` turns off prompt injection and memory retrieval without deleting graph files
+- `/codex:graph init` validates Graphify dependencies and builds the first graph
+- `/codex:graph update` refreshes the current workspace graph
+- `/codex:graph query`, `explain`, and `path` retrieve compact graph context
+- `/codex:graph context` combines graph relationships with relevant prior orchestration memory
+- collaborative prompts receive task-scoped graph context when `injectIntoPrompts` is enabled
+- collaborative workflows call the graph updater after Codex-reported file changes
+- graph updates use a lock file and pending-update manifest to avoid concurrent write collisions
+- collaborative workflow graph updates run through a background sync worker by default
+- execution summaries are saved as markdown memory entries when `saveExecutionMemory` is enabled
+
+This layer is adapter-based so future graph or memory providers can replace Graphify without rewriting the orchestration workflows.
 
 ## Execution Metrics
 
@@ -594,3 +726,59 @@ Yes. If you already use Codex, the plugin picks up the same [configuration](#com
 Yes. Because the plugin uses your local Codex CLI, your existing sign-in method and config still apply.
 
 If you need to point the built-in OpenAI provider at a different endpoint, set `openai_base_url` in your [Codex config](https://developers.openai.com/codex/config-advanced/#config-and-state-locations).
+
+## Implemented Feature Summary
+
+This collaborative runtime now includes:
+
+- Claude + Codex pair programming with `/codex:pair`
+- fast direct Codex execution with `/codex:codex-inline`
+- read-only architecture comparison with `/codex:debate`
+- configurable multi-agent execution with `/codex:parallel`
+- workflow modes through `/codex:mode fast|balanced|architect`
+- token, cost, file-change, command, and runtime metrics
+- safe default write permissions with workspace-write sandbox and on-request approvals
+- loop protection, retry caps, timeout guards, and command sanitization
+- runtime diagnostics through `/codex:status`
+- Graphify-backed context graph commands through `/codex:graph`
+- context graph bootstrap, config preview, enable, and disable commands
+- task-scoped graph context injection into collaborative prompts
+- execution memory saved under `graphify-out/memory/orchestration/`
+- `/codex:graph context` retrieval that combines graph relationships with prior workflow memory
+- graph update locking, pending-update recovery, stale lock handling, and parallel write-conflict diagnostics
+- non-blocking background graph sync for collaborative workflow completion
+- dependency-free `graph.json` query fallback when Python Graphify dependencies are not installed
+
+## Step 1-10 Verification Summary
+
+Use this section to verify what was implemented across the architecture upgrade:
+
+1. **Collaborative orchestration commands**  
+   Added `/codex:pair`, `/codex:codex-inline`, `/codex:debate`, and `/codex:parallel` while preserving the existing plugin runtime.
+
+2. **Executor abstraction and routing**  
+   Added provider-neutral executor structure around Claude/Codex roles so future providers can be added without rewriting workflows.
+
+3. **Permission and execution safety**  
+   Added safe write defaults, permission diagnostics, full-power opt-in, and blocked-write recovery guidance.
+
+4. **Metrics, modes, and loop protection**  
+   Added token/cost/runtime/file/command metrics, `/codex:mode`, command sanitization, timeout/retry/depth guards, and `/codex:status` runtime diagnostics.
+
+5. **Graphify architecture integration**  
+   Added a modular Graphify context provider instead of tightly coupling orchestration logic to Graphify internals.
+
+6. **Graph commands and context retrieval**  
+   Added `/codex:graph status`, `query`, `explain`, `path`, and `context` with bounded graph output.
+
+7. **Prompt-time graph context injection**  
+   Collaborative prompts can now receive task-scoped graph context when `contextGraph.enabled=true`.
+
+8. **Execution memory layer**  
+   Workflow summaries are saved under `graphify-out/memory/orchestration/` and retrieved with graph context for future tasks.
+
+9. **Live synchronization safety**  
+   Added graph update locking, pending-update recovery, stale lock handling, failed-update requeueing, parallel write-conflict diagnostics, and background sync workers.
+
+10. **Bootstrap, config, and packaging hardening**  
+    Added `/codex:graph config`, `enable`, `disable`, and `init`; documented dependency checks, first-run flow, and final feature summary; updated plugin/package descriptions for the collaborative memory runtime.

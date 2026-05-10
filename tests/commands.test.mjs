@@ -77,6 +77,7 @@ test("continue is not exposed as a user-facing command", () => {
     "cancel.md",
     "codex-inline.md",
     "debate.md",
+    "graph.md",
     "mode.md",
     "pair.md",
     "parallel.md",
@@ -93,6 +94,7 @@ test("collaborative commands expose pair, inline, debate, and parallel workflows
   const inline = read("commands/codex-inline.md");
   const debate = read("commands/debate.md");
   const parallel = read("commands/parallel.md");
+  const graph = read("commands/graph.md");
   const mode = read("commands/mode.md");
   const readme = fs.readFileSync(path.join(ROOT, "README.md"), "utf8");
 
@@ -121,6 +123,16 @@ test("collaborative commands expose pair, inline, debate, and parallel workflows
   assert.match(parallel, /--agents codex,codex-fast/);
   assert.match(parallel, /conflicting edits/i);
 
+  assert.match(graph, /codex-companion\.mjs" graph "\$ARGUMENTS"/);
+  assert.match(graph, /context graph/i);
+  assert.match(graph, /`config`: preview the recommended context graph config block/i);
+  assert.match(graph, /`enable`: persist the recommended context graph config/i);
+  assert.match(graph, /`disable`: disable context graph prompt injection/i);
+  assert.match(graph, /`init`: validate Graphify dependencies/i);
+  assert.match(graph, /query <text>/);
+  assert.match(graph, /path <source> <target>/);
+  assert.match(graph, /Return the command stdout verbatim/i);
+
   assert.match(mode, /fast/);
   assert.match(mode, /architect/);
   assert.match(mode, /balanced/);
@@ -130,6 +142,7 @@ test("collaborative commands expose pair, inline, debate, and parallel workflows
   assert.match(readme, /### `\/codex:codex-inline`/);
   assert.match(readme, /### `\/codex:debate`/);
   assert.match(readme, /### `\/codex:parallel`/);
+  assert.match(readme, /### `\/codex:graph`/);
   assert.match(readme, /### `\/codex:mode`/);
   assert.match(readme, /ModelExecutor/);
   assert.match(readme, /codex-companion\.config\.json/);

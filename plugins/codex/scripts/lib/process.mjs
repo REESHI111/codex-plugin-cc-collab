@@ -8,6 +8,7 @@ export function runCommand(command, args = [], options = {}) {
     encoding: "utf8",
     input: options.input,
     maxBuffer: options.maxBuffer,
+    timeout: options.timeout,
     stdio: options.stdio ?? "pipe",
     shell: process.platform === "win32" ? (process.env.SHELL || true) : false,
     windowsHide: true
@@ -16,7 +17,7 @@ export function runCommand(command, args = [], options = {}) {
   return {
     command,
     args,
-    status: result.status ?? 0,
+    status: result.status ?? (result.signal ? 1 : 0),
     signal: result.signal ?? null,
     stdout: result.stdout ?? "",
     stderr: result.stderr ?? "",

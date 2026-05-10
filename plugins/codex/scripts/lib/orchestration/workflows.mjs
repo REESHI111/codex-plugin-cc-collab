@@ -9,6 +9,7 @@ import { createLoopGuard, resolveLoopLimits } from "./loop-protection.mjs";
 import { createMetricsCollector } from "./metrics.mjs";
 import { applyWorkflowMode, resolveWorkflowMode } from "./modes.mjs";
 import { buildPermissionProfile } from "./permissions.mjs";
+import { retrieveContextGraphForTask, updateContextGraphAfterWorkflow } from "./context-graph.mjs";
 
 function firstLine(text, fallback) {
   return (
@@ -62,9 +63,18 @@ export async function runCodexInlineWorkflow({ cwd, task, write = true, model, e
   const providerId = config.routing?.implementer ?? "codex";
   const provider = getProvider(config, providerId);
   const executor = createExecutor(providerId, provider);
+  const contextGraph = await retrieveContextGraphForTask({
+    cwd,
+    config,
+    task,
+    workflow: "codex-inline",
+    mode: mode.id,
+    onProgress
+  });
   const prompt = buildCodexInlinePrompt({
     task,
-    strategyName: mode.id === "architect" ? "concise" : "fast"
+    strategyName: mode.id === "architect" ? "concise" : "fast",
+    contextGraphText: contextGraph.text
   });
   metrics.trackModelUsage("codex", { inputText: prompt });
   const permissionProfile = buildPermissionProfile(config, {
@@ -90,14 +100,19 @@ export async function runCodexInlineWorkflow({ cwd, task, write = true, model, e
   );
   metrics.absorbCodexResult(result);
   const finalMetrics = metrics.finishExecution();
-
-  return {
+  const payload = {
     workflow: "codex-inline",
     mode: mode.id,
     summary: firstLine(result.finalMessage, "Codex inline task completed."),
+    task,
     codex: normalizeCodexResult(result, executor.label),
     metrics: finalMetrics
   };
+  payload.contextGraph = {
+    retrieval: contextGraph,
+    ...(await updateContextGraphAfterWorkflow({ cwd, config, workflowResult: payload, onProgress }))
+  };
+  return payload;
 }
 
 export async function runPairWorkflow({ cwd, task, claudePlan, write = true, model, effort, config, permissionOptions, onProgress }) {
@@ -121,10 +136,19 @@ export async function runPairWorkflow({ cwd, task, claudePlan, write = true, mod
   const providerId = config.routing?.implementer ?? "codex";
   const provider = getProvider(config, providerId);
   const executor = createExecutor(providerId, provider);
+  const contextGraph = await retrieveContextGraphForTask({
+    cwd,
+    config,
+    task,
+    workflow: "pair",
+    mode: mode.id,
+    onProgress
+  });
   const prompt = buildPairImplementationPrompt({
     task,
     claudePlan,
-    strategyName: mode.promptStrategy
+    strategyName: mode.promptStrategy,
+    contextGraphText: contextGraph.text
   });
   metrics.trackModelUsage("codex", { inputText: prompt });
 
@@ -151,8 +175,7 @@ export async function runPairWorkflow({ cwd, task, claudePlan, write = true, mod
   );
   metrics.absorbCodexResult(result);
   const finalMetrics = metrics.finishExecution();
-
-  return {
+  const payload = {
     workflow: "pair",
     mode: mode.id,
     summary: firstLine(result.finalMessage, "Pair implementation completed."),
@@ -161,6 +184,11 @@ export async function runPairWorkflow({ cwd, task, claudePlan, write = true, mod
     codex: normalizeCodexResult(result, executor.label),
     metrics: finalMetrics
   };
+  payload.contextGraph = {
+    retrieval: contextGraph,
+    ...(await updateContextGraphAfterWorkflow({ cwd, config, workflowResult: payload, onProgress }))
+  };
+  return payload;
 }
 
 export async function runDebateWorkflow({ cwd, task, claudeProposal, model, effort, config, onProgress }) {
@@ -184,10 +212,19 @@ export async function runDebateWorkflow({ cwd, task, claudeProposal, model, effo
   const providerId = config.routing?.implementer ?? "codex";
   const provider = getProvider(config, providerId);
   const executor = createExecutor(providerId, provider);
+  const contextGraph = await retrieveContextGraphForTask({
+    cwd,
+    config,
+    task,
+    workflow: "debate",
+    mode: mode.id,
+    onProgress
+  });
   const prompt = buildDebateAlternativePrompt({
     task,
     claudeProposal,
-    strategyName: mode.id === "fast" ? "concise" : "rigorous"
+    strategyName: mode.id === "fast" ? "concise" : "rigorous",
+    contextGraphText: contextGraph.text
   });
   metrics.trackModelUsage("codex", { inputText: prompt });
 
@@ -212,8 +249,7 @@ export async function runDebateWorkflow({ cwd, task, claudeProposal, model, effo
   );
   metrics.absorbCodexResult(result);
   const finalMetrics = metrics.finishExecution();
-
-  return {
+  const payload = {
     workflow: "debate",
     mode: mode.id,
     summary: firstLine(result.finalMessage, "Debate alternative completed."),
@@ -222,6 +258,11 @@ export async function runDebateWorkflow({ cwd, task, claudeProposal, model, effo
     codex: normalizeCodexResult(result, executor.label),
     metrics: finalMetrics
   };
+  payload.contextGraph = {
+    retrieval: contextGraph,
+    ...(await updateContextGraphAfterWorkflow({ cwd, config, workflowResult: payload, onProgress }))
+  };
+  return payload;
 }
 
 export async function runParallelWorkflow({ cwd, task, agents, write = true, model, effort, config, permissionOptions, onProgress }) {
@@ -243,6 +284,14 @@ export async function runParallelWorkflow({ cwd, task, agents, write = true, mod
       "Parallel write mode with multiple agents is disabled to avoid conflicting edits. Use --read-only, run one writer, or set execution.allowConcurrentWrites=true."
     );
   }
+  const contextGraph = await retrieveContextGraphForTask({
+    cwd,
+    config,
+    task,
+    workflow: "parallel",
+    mode: mode.id,
+    onProgress
+  });
 
   const runs = uniqueAgents.map(async (providerId) => {
     const provider = getProvider(config, providerId);
@@ -250,7 +299,8 @@ export async function runParallelWorkflow({ cwd, task, agents, write = true, mod
     const prompt = buildParallelAgentPrompt({
       task,
       agentLabel: executor.label,
-      strategyName: mode.promptStrategy
+      strategyName: mode.promptStrategy,
+      contextGraphText: contextGraph.text
     });
     metrics.trackModelUsage("codex", { inputText: prompt });
     const permissionProfile = buildPermissionProfile(config, {
@@ -306,8 +356,7 @@ export async function runParallelWorkflow({ cwd, task, agents, write = true, mod
     }
   }
   const finalMetrics = metrics.finishExecution();
-
-  return {
+  const payload = {
     workflow: "parallel",
     mode: mode.id,
     summary: `${outputs.filter((output) => output.ok).length}/${outputs.length} parallel agent(s) completed.`,
@@ -315,4 +364,9 @@ export async function runParallelWorkflow({ cwd, task, agents, write = true, mod
     outputs,
     metrics: finalMetrics
   };
+  payload.contextGraph = {
+    retrieval: contextGraph,
+    ...(await updateContextGraphAfterWorkflow({ cwd, config, workflowResult: payload, onProgress }))
+  };
+  return payload;
 }

@@ -61,6 +61,32 @@ export const DEFAULT_ORCHESTRATION_CONFIG = {
     allowGitOperations: true,
     fullPower: false
   },
+  contextGraph: {
+    enabled: false,
+    provider: "graphify",
+    outputDir: "graphify-out",
+    graphPath: "graphify-out/graph.json",
+    updateStrategy: "workflow-end",
+    updateTimeoutMs: 120000,
+    backgroundSync: true,
+    lockUpdates: true,
+    staleLockMs: 600000,
+    recordPendingUpdates: true,
+    queryTokenBudget: 2000,
+    queryDepth: 2,
+    injectIntoPrompts: true,
+    promptTokenBudget: 2000,
+    promptQueryDepth: 2,
+    tokenBudgetByMode: {
+      fast: 1200,
+      balanced: 2000,
+      architect: 4000
+    },
+    memoryRetrieval: true,
+    maxMemoryEntries: 3,
+    memoryTokenBudget: 1000,
+    saveExecutionMemory: true
+  },
   prompting: {
     strategy: "concise"
   },
@@ -134,6 +160,13 @@ export function summarizeOrchestrationConfig(config) {
     approvalMode: config.permissions?.approvalMode ?? "on-request",
     allowFileWrites: config.permissions?.allowFileWrites !== false,
     allowGitOperations: config.permissions?.allowGitOperations !== false,
+    contextGraph: {
+      enabled: config.contextGraph?.enabled === true,
+      provider: config.contextGraph?.provider ?? "graphify",
+      graphPath: config.contextGraph?.graphPath ?? "graphify-out/graph.json",
+      updateStrategy: config.contextGraph?.updateStrategy ?? "workflow-end",
+      injectIntoPrompts: config.contextGraph?.injectIntoPrompts !== false
+    },
     promptStrategy: config.prompting?.strategy ?? "concise"
   };
 }

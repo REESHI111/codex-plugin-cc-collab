@@ -334,6 +334,46 @@ function appendModelBlock(lines, title, output) {
   lines.push("", `## ${title}`, "", body);
 }
 
+function appendContextGraphBlock(lines, contextGraph) {
+  if (!contextGraph) {
+    return;
+  }
+  lines.push("", "[GRAPH] Context Graph");
+  const retrieval = contextGraph.retrieval;
+  if (retrieval) {
+    lines.push(`- Retrieval: ${retrieval.injected ? "injected" : "skipped"}`);
+    if (retrieval.detail) {
+      lines.push(`- Retrieval Detail: ${retrieval.detail}`);
+    }
+  }
+  const update = contextGraph.update;
+  if (update) {
+    lines.push(`- Update: ${update.queued ? "queued" : update.ok ? "updated" : update.skipped ? "skipped" : "failed"}`);
+    if (update.detail) {
+      lines.push(`- Detail: ${update.detail}`);
+    }
+    if (update.workerStarted) {
+      lines.push(`- Background Worker: started${update.pid ? ` (${update.pid})` : ""}`);
+    }
+    if (update.lockBusy) {
+      lines.push("- Pending Sync: recorded for the next graph update");
+    }
+    if (update.pendingFilesApplied?.length) {
+      lines.push(`- Pending Files Applied: ${update.pendingFilesApplied.length}`);
+    }
+  }
+  if (contextGraph.conflicts?.length) {
+    lines.push("- Parallel Write Conflicts:");
+    for (const conflict of contextGraph.conflicts) {
+      lines.push(`  - ${conflict.filePath}: ${conflict.owners.join(", ")}`);
+    }
+  }
+  const memory = contextGraph.memory;
+  if (memory?.ok && memory.filePath) {
+    lines.push(`- Memory: ${memory.filePath}`);
+  }
+}
+
 export function renderCollaborationResult(result) {
   const metricsBlock = renderExecutionMetrics(result.metrics);
   if (result.workflow === "codex-inline") {
@@ -379,6 +419,7 @@ export function renderCollaborationResult(result) {
   if (metricsBlock) {
     lines.push("", metricsBlock);
   }
+  appendContextGraphBlock(lines, result.contextGraph);
 
   return `${lines.join("\n").trimEnd()}\n`;
 }
@@ -418,6 +459,22 @@ export function renderStatusReport(report) {
     lines.push("Current Mode:");
     lines.push(`- ${report.runtimeStatus.currentMode}`);
     lines.push("");
+    if (report.runtimeStatus.contextGraph) {
+      lines.push("Context Graph:");
+      lines.push(`- ${report.runtimeStatus.contextGraph.enabled ? "enabled" : "disabled"}`);
+      lines.push(`- provider: ${report.runtimeStatus.contextGraph.provider}`);
+      lines.push(`- available: ${report.runtimeStatus.contextGraph.available ? "yes" : "no"}`);
+      lines.push(`- graph: ${report.runtimeStatus.contextGraph.graphExists ? report.runtimeStatus.contextGraph.graphPath : "not built"}`);
+      lines.push(`- nodes: ${report.runtimeStatus.contextGraph.nodeCount}`);
+      lines.push(`- edges: ${report.runtimeStatus.contextGraph.edgeCount}`);
+      if (report.runtimeStatus.contextGraph.memoryDir) {
+        lines.push(`- memory: ${report.runtimeStatus.contextGraph.memoryCount ?? 0} entries`);
+      }
+      if (typeof report.runtimeStatus.contextGraph.promptInjection === "boolean") {
+        lines.push(`- prompt injection: ${report.runtimeStatus.contextGraph.promptInjection ? "enabled" : "disabled"}`);
+      }
+      lines.push("");
+    }
   }
 
   if (report.running.length > 0) {

@@ -23,21 +23,37 @@ export function resolvePromptStrategy(name) {
   return STRATEGIES[name] ?? STRATEGIES.concise;
 }
 
-export function buildCodexInlinePrompt({ task, strategyName = "fast" }) {
+function appendContextGraphSection(lines, contextGraphText) {
+  const context = String(contextGraphText ?? "").trim();
+  if (!context) {
+    return;
+  }
+  lines.push(
+    "",
+    "Relevant context graph:",
+    context,
+    "",
+    "Use this graph context as a retrieval aid. Verify against source files before making risky edits."
+  );
+}
+
+export function buildCodexInlinePrompt({ task, strategyName = "fast", contextGraphText = "" }) {
   const strategy = resolvePromptStrategy(strategyName);
-  return [
+  const lines = [
     "You are Codex acting as an implementation specialist inside a Claude + Codex pair-programming workflow.",
     strategy.instruction,
     "Avoid destructive commands such as rm -rf, git reset --hard, git clean -fd, or sudo unless the user explicitly asked for them.",
     "",
     "Task:",
     task.trim()
-  ].join("\n");
+  ];
+  appendContextGraphSection(lines, contextGraphText);
+  return lines.join("\n");
 }
 
-export function buildPairImplementationPrompt({ task, claudePlan, strategyName = "concise" }) {
+export function buildPairImplementationPrompt({ task, claudePlan, strategyName = "concise", contextGraphText = "" }) {
   const strategy = resolvePromptStrategy(strategyName);
-  return [
+  const lines = [
     "You are Codex, the implementation specialist in a collaborative Claude + Codex workflow.",
     "Claude has already produced the architecture and implementation plan. Follow it unless repository evidence shows a safer minimal adjustment.",
     strategy.instruction,
@@ -53,12 +69,14 @@ export function buildPairImplementationPrompt({ task, claudePlan, strategyName =
     "- Avoid destructive commands such as rm -rf, git reset --hard, git clean -fd, or sudo unless the user explicitly asked for them.",
     "- Run targeted verification when practical.",
     "- Return a compact summary of changed files, checks run, and any follow-up needed."
-  ].join("\n");
+  ];
+  appendContextGraphSection(lines, contextGraphText);
+  return lines.join("\n");
 }
 
-export function buildDebateAlternativePrompt({ task, claudeProposal, strategyName = "rigorous" }) {
+export function buildDebateAlternativePrompt({ task, claudeProposal, strategyName = "rigorous", contextGraphText = "" }) {
   const strategy = resolvePromptStrategy(strategyName);
-  return [
+  const lines = [
     "You are Codex proposing an alternative technical approach for a Claude + Codex debate.",
     "Do not edit files. Compare architecture, implementation risk, maintainability, and verification cost.",
     strategy.instruction,
@@ -74,12 +92,14 @@ export function buildDebateAlternativePrompt({ task, claudeProposal, strategyNam
     "- Key tradeoffs versus Claude's proposal",
     "- When Claude's proposal is better",
     "- A final concise recommendation"
-  ].join("\n");
+  ];
+  appendContextGraphSection(lines, contextGraphText);
+  return lines.join("\n");
 }
 
-export function buildParallelAgentPrompt({ task, agentLabel, strategyName = "concise" }) {
+export function buildParallelAgentPrompt({ task, agentLabel, strategyName = "concise", contextGraphText = "" }) {
   const strategy = resolvePromptStrategy(strategyName);
-  return [
+  const lines = [
     `You are ${agentLabel}, one participant in a parallel multi-agent coding workflow.`,
     "Work independently. Do not assume other agents will cover gaps.",
     strategy.instruction,
@@ -88,5 +108,7 @@ export function buildParallelAgentPrompt({ task, agentLabel, strategyName = "con
     task.trim(),
     "",
     "Return your result with: approach, implementation notes or proposed patch, verification, and risks."
-  ].join("\n");
+  ];
+  appendContextGraphSection(lines, contextGraphText);
+  return lines.join("\n");
 }

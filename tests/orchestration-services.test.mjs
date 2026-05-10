@@ -1,10 +1,22 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
 
 import { createLoopGuard } from "../plugins/codex/scripts/lib/orchestration/loop-protection.mjs";
 import { createMetricsCollector, renderExecutionMetrics } from "../plugins/codex/scripts/lib/orchestration/metrics.mjs";
 import { normalizeWorkflowMode, resolveWorkflowMode } from "../plugins/codex/scripts/lib/orchestration/modes.mjs";
+import { buildCodexInlinePrompt } from "../plugins/codex/scripts/lib/orchestration/prompts.mjs";
 import { sanitizeCommandPrompt } from "../plugins/codex/scripts/lib/orchestration/sanitizer.mjs";
+import {
+  buildRecommendedContextGraphConfig,
+  createContextGraphProvider,
+  detectParallelWriteConflicts,
+  GraphifyContextProvider,
+  retrieveContextGraphForTask,
+  summarizeContextGraphConfig
+} from "../plugins/codex/scripts/lib/orchestration/context-graph.mjs";
+import { makeTempDir } from "./helpers.mjs";
 
 test("sanitizer strips duplicated slash-command prefixes while preserving prompt content", () => {
   assert.equal(
@@ -53,4 +65,280 @@ test("loop guard blocks repeated prompts and excessive depth", () => {
 
   const deepGuard = createLoopGuard({ loopProtection: { maxDepth: 1 } }, { depth: 2 });
   assert.throws(() => deepGuard.assertCanStart("pair"), /Maximum orchestration depth exceeded/);
+});
+
+test("context graph config summarizes safe Graphify defaults", () => {
+  const summary = summarizeContextGraphConfig({
+    contextGraph: {
+      enabled: true,
+      graphPath: "custom/graph.json"
+    }
+  });
+
+  assert.equal(summary.enabled, true);
+  assert.equal(summary.provider, "graphify");
+  assert.equal(summary.graphPath, "custom/graph.json");
+  assert.equal(summary.updateStrategy, "workflow-end");
+  assert.equal(summary.backgroundSync, true);
+  assert.equal(summary.lockUpdates, true);
+  assert.equal(summary.recordPendingUpdates, true);
+  assert.equal(summary.injectIntoPrompts, true);
+  assert.equal(summary.memoryRetrieval, true);
+  assert.equal(summary.maxMemoryEntries, 3);
+  assert.equal(summary.saveExecutionMemory, true);
+});
+
+test("recommended context graph config is enabled and conservative", () => {
+  const config = buildRecommendedContextGraphConfig();
+
+  assert.equal(config.enabled, true);
+  assert.equal(config.provider, "graphify");
+  assert.equal(config.graphPath, "graphify-out/graph.json");
+  assert.equal(config.backgroundSync, true);
+  assert.equal(config.lockUpdates, true);
+  assert.equal(config.recordPendingUpdates, true);
+  assert.equal(config.injectIntoPrompts, true);
+  assert.equal(config.memoryRetrieval, true);
+  assert.equal(config.saveExecutionMemory, true);
+});
+
+test("context graph provider stays disabled unless explicitly enabled", async () => {
+  const provider = createContextGraphProvider({
+    cwd: process.cwd(),
+    config: {}
+  });
+  const status = await provider.getStatus();
+  const update = await provider.updateFiles(["README.md"]);
+
+  assert.equal(status.enabled, false);
+  assert.equal(status.available, false);
+  assert.equal(update.skipped, true);
+});
+
+test("Graphify provider resolves workspace graph paths", async () => {
+  const cwd = process.cwd();
+  const provider = new GraphifyContextProvider({
+    cwd,
+    config: {
+      contextGraph: {
+        enabled: true,
+        graphPath: "graphify-out/graph.json"
+      }
+    }
+  });
+  const status = await provider.getStatus();
+
+  assert.equal(status.provider, "graphify");
+  assert.equal(status.graphPath, `${cwd}/graphify-out/graph.json`);
+  assert.equal(status.reportPath, `${cwd}/graphify-out/GRAPH_REPORT.md`);
+  assert.equal(status.memoryDir, `${cwd}/graphify-out/memory/orchestration`);
+  assert.equal(status.promptInjection, true);
+  assert.equal(status.memoryRetrieval, true);
+});
+
+test("Graphify provider can query graph json without Python graph dependencies", async () => {
+  const cwd = process.cwd();
+  const provider = new GraphifyContextProvider({
+    cwd,
+    config: {
+      contextGraph: {
+        enabled: true,
+        graphPath: "graphify-7/worked/httpx/graph.json"
+      }
+    }
+  });
+  const result = await provider.queryGraph("auth client", { tokenBudget: 500 });
+
+  assert.equal(result.ok, true);
+  assert.match(result.text, /Graph context for: auth client/);
+  assert.match(result.text, /Auth|Client/);
+});
+
+test("Graphify JS retrieval ranks file path matches into compact context", async () => {
+  const provider = new GraphifyContextProvider({
+    cwd: process.cwd(),
+    config: {
+      contextGraph: {
+        enabled: true,
+        graphPath: "graphify-7/worked/httpx/graph.json"
+      }
+    }
+  });
+  const result = await provider.queryGraph('"auth.py" retry client', { tokenBudget: 500 });
+
+  assert.equal(result.ok, true);
+  assert.match(result.text, /auth\.py/);
+  assert.match(result.text, /client\.py|Client/);
+});
+
+
+test("context graph retrieval is token-bounded and prompt-ready", async () => {
+  const context = await retrieveContextGraphForTask({
+    cwd: process.cwd(),
+    config: {
+      contextGraph: {
+        enabled: true,
+        graphPath: "graphify-7/worked/httpx/graph.json",
+        promptTokenBudget: 500
+      }
+    },
+    task: "change auth client",
+    workflow: "codex-inline",
+    mode: "fast"
+  });
+
+  assert.equal(context.injected, true);
+  assert.match(context.text, /Graph context for:/);
+
+  const prompt = buildCodexInlinePrompt({
+    task: "change auth client",
+    contextGraphText: context.text
+  });
+  assert.match(prompt, /Relevant context graph:/);
+  assert.match(prompt, /Verify against source files/);
+});
+
+test("Graphify provider saves and retrieves orchestration memory", async () => {
+  const cwd = makeTempDir();
+  fs.mkdirSync(path.join(cwd, "graphify-out"), { recursive: true });
+  fs.copyFileSync(
+    path.join(process.cwd(), "graphify-7", "worked", "httpx", "graph.json"),
+    path.join(cwd, "graphify-out", "graph.json")
+  );
+  const provider = new GraphifyContextProvider({
+    cwd,
+    config: {
+      contextGraph: {
+        enabled: true,
+        graphPath: "graphify-out/graph.json",
+        maxMemoryEntries: 2
+      }
+    }
+  });
+
+  const saved = await provider.saveExecutionMemory({
+    workflow: "pair",
+    mode: "balanced",
+    task: "fix auth client retries",
+    summary: "Updated auth client retry behavior.",
+    filesModified: ["src/auth/client.ts"],
+    shellCommands: ["npm test"]
+  });
+  const memory = await provider.searchExecutionMemory("auth retries", { tokenBudget: 400 });
+  const context = await provider.getTaskContext("auth retries", { tokenBudget: 900 });
+
+  assert.equal(saved.ok, true);
+  assert.equal(memory.ok, true);
+  assert.equal(memory.entries.length, 1);
+  assert.match(memory.entries[0].text, /fix auth client retries/);
+  assert.equal(context.ok, true);
+  assert.match(context.text, /## Graph Context/);
+  assert.match(context.text, /## Execution Memory/);
+});
+
+test("Graphify provider records pending updates when graph lock is busy", async () => {
+  const cwd = makeTempDir();
+  fs.mkdirSync(path.join(cwd, "graphify-out"), { recursive: true });
+  fs.writeFileSync(
+    path.join(cwd, "graphify-out", ".codex-graph-update.lock"),
+    JSON.stringify({ token: "other-process", createdAt: new Date().toISOString() }),
+    "utf8"
+  );
+  const provider = new GraphifyContextProvider({
+    cwd,
+    config: {
+      contextGraph: {
+        enabled: true,
+        graphPath: "graphify-out/graph.json",
+        staleLockMs: 600000
+      }
+    }
+  });
+
+  const update = await provider.updateFiles(["src/app.ts"], { reason: "test" });
+  const pending = JSON.parse(fs.readFileSync(path.join(cwd, "graphify-out", "pending-updates.json"), "utf8"));
+
+  assert.equal(update.skipped, true);
+  assert.equal(update.lockBusy, true);
+  assert.deepEqual(pending.files, ["src/app.ts"]);
+});
+
+test("Graphify provider can enqueue background updates without running Graphify inline", async () => {
+  const cwd = makeTempDir();
+  fs.mkdirSync(path.join(cwd, "graphify-out"), { recursive: true });
+  const provider = new GraphifyContextProvider({
+    cwd,
+    config: {
+      contextGraph: {
+        enabled: true,
+        graphPath: "graphify-out/graph.json"
+      }
+    }
+  });
+
+  const update = await provider.enqueueUpdate(["src/bg.ts"], {
+    reason: "test-background",
+    workerScriptPath: path.join(cwd, "missing-worker.mjs")
+  });
+  const pending = JSON.parse(fs.readFileSync(path.join(cwd, "graphify-out", "pending-updates.json"), "utf8"));
+
+  assert.equal(update.queued, true);
+  assert.equal(update.workerStarted, false);
+  assert.deepEqual(pending.files, ["src/bg.ts"]);
+});
+
+
+test("parallel write conflict detection reports files touched by multiple agents", () => {
+  const conflicts = detectParallelWriteConflicts([
+    { providerId: "codex", label: "Codex", touchedFiles: ["src/app.ts", "src/a.ts"] },
+    { providerId: "codex-fast", label: "Codex Fast", touchedFiles: ["src/app.ts"] }
+  ]);
+
+  assert.deepEqual(conflicts, [
+    {
+      filePath: "src/app.ts",
+      owners: ["Codex", "Codex Fast"]
+    }
+  ]);
+});
+
+test("Graphify provider re-queues changed files when update command fails", async () => {
+  const cwd = makeTempDir();
+  fs.mkdirSync(path.join(cwd, "graphify-out"), { recursive: true });
+  const provider = new GraphifyContextProvider({
+    cwd,
+    config: {
+      contextGraph: {
+        enabled: true,
+        graphPath: "graphify-out/graph.json",
+        command: process.execPath,
+        commandArgs: ["-e", "process.exit(7)"]
+      }
+    }
+  });
+
+  const update = await provider.updateFiles(["src/fail.ts"], { reason: "test-failure" });
+  const pending = JSON.parse(fs.readFileSync(path.join(cwd, "graphify-out", "pending-updates.json"), "utf8"));
+
+  assert.equal(update.ok, false);
+  assert.deepEqual(pending.files, ["src/fail.ts"]);
+});
+
+test("Graphify bootstrap reports ready when graph already exists", async () => {
+  const cwd = process.cwd();
+  const provider = new GraphifyContextProvider({
+    cwd,
+    config: {
+      contextGraph: {
+        enabled: true,
+        graphPath: "graphify-7/worked/httpx/graph.json"
+      }
+    }
+  });
+
+  const result = await provider.bootstrap();
+
+  assert.equal(result.ok, true);
+  assert.equal(result.build.skipped, true);
+  assert.equal(result.after.graphExists, true);
 });

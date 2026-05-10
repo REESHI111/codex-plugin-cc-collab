@@ -23,6 +23,11 @@ import {
 import { readStdinIfPiped } from "./lib/fs.mjs";
 import { collectReviewContext, ensureGitRepository, resolveReviewTarget } from "./lib/git.mjs";
 import { loadOrchestrationConfig, summarizeOrchestrationConfig } from "./lib/orchestration/config.mjs";
+import {
+  buildRecommendedContextGraphConfig,
+  createContextGraphProvider,
+  GraphifyContextProvider
+} from "./lib/orchestration/context-graph.mjs";
 import { normalizeWorkflowMode, resolveWorkflowMode } from "./lib/orchestration/modes.mjs";
 import { sanitizeCommandPrompt } from "./lib/orchestration/sanitizer.mjs";
 import {
@@ -93,6 +98,7 @@ function printUsage() {
       "  node scripts/codex-companion.mjs pair [--read-only|--full-power] [--claude-plan-file <file>] [--model <model|spark>] [prompt]",
       "  node scripts/codex-companion.mjs debate [--claude-proposal-file <file>] [--model <model|spark>] [prompt]",
       "  node scripts/codex-companion.mjs parallel [--read-only|--full-power] [--agents codex,codex-fast] [prompt]",
+      "  node scripts/codex-companion.mjs graph <status|config|enable|disable|init|update|query|explain|path|context> [args]",
       "  node scripts/codex-companion.mjs mode [fast|architect|balanced] [--json]",
       "  node scripts/codex-companion.mjs status [job-id] [--all] [--json]",
       "  node scripts/codex-companion.mjs result [job-id] [--json]",
@@ -254,6 +260,8 @@ async function buildRuntimeStatus(cwd) {
   const mode = resolveWorkflowMode(config);
   const jobs = sortJobsNewestFirst(listJobs(workspaceRoot));
   const active = jobs.find((job) => job.status === "queued" || job.status === "running");
+  const graphProvider = createContextGraphProvider({ cwd: workspaceRoot, config });
+  const contextGraph = await graphProvider.getStatus();
 
   return {
     sandbox: summary.sandboxMode,
@@ -263,7 +271,8 @@ async function buildRuntimeStatus(cwd) {
     claudeExecutor: "active",
     codexExecutor: availability.available ? "active" : `unavailable (${availability.detail})`,
     currentWorkflow: active?.kindLabel ?? active?.kind ?? summary.defaultWorkflow,
-    currentMode: mode.id
+    currentMode: mode.id,
+    contextGraph
   };
 }
 
@@ -633,6 +642,120 @@ function buildTaskRunMetadata({ prompt, resumeLast = false }) {
 
 function renderQueuedTaskLaunch(payload) {
   return `${payload.title} started in the background as ${payload.jobId}. Check /codex:status ${payload.jobId} for progress.\n`;
+}
+
+function renderGraphPayload(payload) {
+  const lines = ["# Codex Context Graph", ""];
+  if (payload.command === "status") {
+    const status = payload.status;
+    lines.push("[GRAPH] Runtime Status", "");
+    lines.push(`- Enabled: ${status.enabled ? "yes" : "no"}`);
+    lines.push(`- Provider: ${status.provider}`);
+    lines.push(`- Available: ${status.available ? "yes" : "no"}`);
+    lines.push(`- Graph: ${status.graphExists ? status.graphPath : "not built"}`);
+    lines.push(`- Report: ${status.reportExists ? status.reportPath : "not built"}`);
+    lines.push(`- Nodes: ${status.nodeCount}`);
+    lines.push(`- Edges: ${status.edgeCount}`);
+    if (status.memoryDir) {
+      lines.push(`- Memory Dir: ${status.memoryDir}`);
+      lines.push(`- Memory Entries: ${status.memoryCount ?? 0}`);
+    }
+    if (typeof status.promptInjection === "boolean") {
+      lines.push(`- Prompt Injection: ${status.promptInjection ? "enabled" : "disabled"}`);
+    }
+    if (typeof status.memoryRetrieval === "boolean") {
+      lines.push(`- Memory Retrieval: ${status.memoryRetrieval ? "enabled" : "disabled"}`);
+    }
+    if (status.lastUpdated) {
+      lines.push(`- Last Updated: ${status.lastUpdated}`);
+    }
+    lines.push(`- Detail: ${status.detail}`);
+    return `${lines.join("\n").trimEnd()}\n`;
+  }
+
+  if (payload.command === "config") {
+    lines.push("Recommended context graph config:", "", "```json");
+    lines.push(JSON.stringify({ contextGraph: payload.contextGraph }, null, 2));
+    lines.push("```");
+    return `${lines.join("\n").trimEnd()}\n`;
+  }
+
+  if (payload.command === "enable" || payload.command === "disable") {
+    lines.push(payload.command === "enable" ? "Context graph memory mode enabled." : "Context graph memory mode disabled.");
+    lines.push("");
+    lines.push(`- State config updated: ${payload.updated ? "yes" : "no"}`);
+    lines.push(`- Enabled: ${payload.contextGraph.enabled ? "yes" : "no"}`);
+    lines.push(`- Graph: ${payload.contextGraph.graphPath}`);
+    if (payload.command === "enable") {
+      lines.push("", "Next steps:");
+      lines.push("- Run `/codex:graph init` to validate Graphify and build the first graph.");
+      lines.push("- Run `/codex:graph status` to confirm memory mode is active.");
+    }
+    return `${lines.join("\n").trimEnd()}\n`;
+  }
+
+  if (payload.command === "init" || payload.command === "bootstrap") {
+    const result = payload.result;
+    lines.push(result.ok ? "Context graph bootstrap completed." : "Context graph bootstrap needs attention.");
+    lines.push("");
+    lines.push(`- Runtime: ${result.runtime?.ok ? "ready" : "not ready"}`);
+    if (result.runtime?.checks) {
+      for (const [name, check] of Object.entries(result.runtime.checks)) {
+        lines.push(`- ${name}: ${check.ok ? "ok" : check.error ?? "missing"}`);
+      }
+    }
+    lines.push(`- Build: ${result.build?.ok ? "ok" : result.build?.skipped ? "skipped" : "failed"}`);
+    if (result.build?.detail) {
+      lines.push(`- Build Detail: ${result.build.detail}`);
+    }
+    lines.push(`- Graph: ${result.after?.graphExists ? result.after.graphPath : "not built"}`);
+    lines.push(`- Config Enabled: ${result.configEnabled ? "yes" : "no"}`);
+    if (result.nextSteps?.length) {
+      lines.push("", "Next steps:");
+      for (const step of result.nextSteps) {
+        lines.push(`- ${step}`);
+      }
+    }
+    return `${lines.join("\n").trimEnd()}\n`;
+  }
+
+  if (payload.command === "update") {
+    lines.push(payload.result.ok ? "Graph update completed." : "Graph update did not complete.");
+    lines.push("");
+    lines.push(`- Detail: ${payload.result.detail}`);
+    return `${lines.join("\n").trimEnd()}\n`;
+  }
+
+  if (!payload.result?.ok) {
+    lines.push(payload.result?.error ?? payload.result?.detail ?? "Graph command failed.");
+    return `${lines.join("\n").trimEnd()}\n`;
+  }
+
+  if (payload.command === "query" || payload.command === "context") {
+    lines.push(payload.result.text ?? "");
+  } else if (payload.command === "explain") {
+    const node = payload.result.node ?? {};
+    lines.push(`Node: ${node.label ?? node.id ?? "unknown"}`);
+    if (node.source_file) {
+      lines.push(`Source: ${node.source_file}${node.source_location ? ` ${node.source_location}` : ""}`);
+    }
+    if (payload.result.neighbors?.length) {
+      lines.push("", "Neighbors:");
+      for (const neighbor of payload.result.neighbors) {
+        lines.push(`- ${neighbor.label} (${neighbor.relation})${neighbor.source_file ? ` - ${neighbor.source_file}` : ""}`);
+      }
+    }
+  } else if (payload.command === "path") {
+    const steps = payload.result.path ?? [];
+    if (steps.length === 0) {
+      lines.push("Source and target are the same node.");
+    } else {
+      for (const step of steps) {
+        lines.push(`- ${step.source_label} --${step.relation}--> ${step.target_label}`);
+      }
+    }
+  }
+  return `${lines.join("\n").trimEnd()}\n`;
 }
 
 function getJobKindLabel(kind, jobClass) {
@@ -1145,6 +1268,165 @@ async function handleParallel(argv) {
   });
 }
 
+async function handleGraph(argv) {
+  const { options, positionals } = parseCommandInput(argv, {
+    valueOptions: ["cwd", "token-budget", "depth"],
+    booleanOptions: ["json", "force"]
+  });
+
+  const cwd = resolveCommandCwd(options);
+  const workspaceRoot = resolveCommandWorkspace(options);
+  const config = loadOrchestrationConfig(workspaceRoot);
+  const command = positionals[0] ?? "status";
+  const rest = positionals.slice(1);
+  const provider = command === "init" || command === "bootstrap"
+    ? new GraphifyContextProvider({
+        cwd: workspaceRoot,
+        config: {
+          ...config,
+          contextGraph: {
+            ...(config.contextGraph ?? {}),
+            enabled: true
+          }
+        }
+      })
+    : createContextGraphProvider({ cwd: workspaceRoot, config });
+
+  let payload;
+  if (command === "status") {
+    payload = {
+      command,
+      status: await provider.getStatus()
+    };
+  } else if (command === "config") {
+    payload = {
+      command,
+      contextGraph: buildRecommendedContextGraphConfig({
+        ...(config.contextGraph ?? {}),
+        enabled: true
+      })
+    };
+  } else if (command === "enable") {
+    const existing = getStateOrchestrationConfig(workspaceRoot);
+    const contextGraph = buildRecommendedContextGraphConfig({
+      ...(existing.contextGraph ?? {}),
+      enabled: true
+    });
+    setConfig(workspaceRoot, "orchestration", {
+      ...existing,
+      contextGraph
+    });
+    payload = {
+      command,
+      updated: true,
+      contextGraph
+    };
+  } else if (command === "disable") {
+    const existing = getStateOrchestrationConfig(workspaceRoot);
+    const contextGraph = {
+      ...buildRecommendedContextGraphConfig(existing.contextGraph ?? {}),
+      enabled: false,
+      injectIntoPrompts: false,
+      memoryRetrieval: false
+    };
+    setConfig(workspaceRoot, "orchestration", {
+      ...existing,
+      contextGraph
+    });
+    payload = {
+      command,
+      updated: true,
+      contextGraph
+    };
+  } else if (command === "init" || command === "bootstrap") {
+    payload = {
+      command,
+      result: await provider.bootstrap({
+        force: Boolean(options.force),
+        configEnabled: config.contextGraph?.enabled === true
+      })
+    };
+  } else if (command === "update") {
+    payload = {
+      command,
+      result: await provider.updateFiles(["."], { force: Boolean(options.force), fullWorkspace: true })
+    };
+  } else if (command === "query") {
+    const query = rest.join(" ").trim();
+    if (!query) {
+      throw new Error("Provide a graph query.");
+    }
+    payload = {
+      command,
+      query,
+      result: await provider.queryGraph(query, {
+        tokenBudget: options["token-budget"],
+        depth: options.depth
+      })
+    };
+  } else if (command === "context") {
+    const query = rest.join(" ").trim();
+    if (!query) {
+      throw new Error("Provide a task or topic for graph context.");
+    }
+    payload = {
+      command,
+      query,
+      result: await provider.getTaskContext(query, {
+        tokenBudget: options["token-budget"],
+        depth: options.depth
+      })
+    };
+  } else if (command === "explain") {
+    const query = rest.join(" ").trim();
+    if (!query) {
+      throw new Error("Provide a node or concept to explain.");
+    }
+    payload = {
+      command,
+      query,
+      result: await provider.explainNode(query, {
+        tokenBudget: options["token-budget"],
+        depth: options.depth
+      })
+    };
+  } else if (command === "path") {
+    if (rest.length < 2) {
+      throw new Error("Provide source and target labels for graph path.");
+    }
+    const [source, ...targetParts] = rest;
+    const target = targetParts.join(" ").trim();
+    payload = {
+      command,
+      source,
+      target,
+      result: await provider.shortestPath(source, target, {
+        tokenBudget: options["token-budget"],
+        depth: options.depth
+      })
+    };
+  } else {
+    throw new Error(`Unknown graph command "${command}". Use status, config, enable, disable, init, update, query, explain, path, or context.`);
+  }
+
+  outputCommandResult(payload, renderGraphPayload(payload), options.json);
+}
+
+async function handleGraphSyncWorker(argv) {
+  const { options } = parseCommandInput(argv, {
+    valueOptions: ["cwd"]
+  });
+
+  const cwd = resolveCommandCwd(options);
+  const workspaceRoot = resolveCommandWorkspace(options);
+  const config = loadOrchestrationConfig(workspaceRoot);
+  const provider = createContextGraphProvider({ cwd: workspaceRoot, config });
+  await provider.updateFiles(["."], {
+    reason: "background-sync-worker",
+    fullWorkspace: true
+  });
+}
+
 async function handleStatus(argv) {
   const { options, positionals } = parseCommandInput(argv, {
     valueOptions: ["cwd", "timeout-ms", "poll-interval-ms"],
@@ -1352,6 +1634,12 @@ async function main() {
       break;
     case "parallel":
       await handleParallel(argv);
+      break;
+    case "graph":
+      await handleGraph(argv);
+      break;
+    case "graph-sync-worker":
+      await handleGraphSyncWorker(argv);
       break;
     case "mode":
       handleMode(argv);
