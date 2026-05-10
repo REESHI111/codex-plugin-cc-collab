@@ -15,6 +15,7 @@ they already have.
 - `/codex:codex-inline` for fast direct Codex implementation
 - `/codex:debate` for Claude and Codex tradeoff comparison
 - `/codex:parallel` for configurable multi-agent runs
+- `/codex:mode` to switch between fast, balanced, and architect orchestration
 - `/codex:rescue`, `/codex:status`, `/codex:result`, and `/codex:cancel` to delegate work and manage background jobs
 
 ## Requirements
@@ -30,6 +31,8 @@ Add the marketplace in Claude Code:
 ```bash
 /plugin marketplace add REESHI111/codex-plugin-cc-collab
 ```
+
+This only registers where Claude Code should look for the plugin. You must still install the plugin from that marketplace.
 
 Install the plugin:
 
@@ -231,9 +234,27 @@ Examples:
 Use this when you want independent attempts or comparisons before choosing an implementation.
 Only one writer is allowed by default. Multiple parallel writers are blocked unless you explicitly set `execution.allowConcurrentWrites=true`.
 
+### `/codex:mode`
+
+Switches the orchestration mode used by collaborative workflows.
+
+Examples:
+
+```bash
+/codex:mode fast
+/codex:mode balanced
+/codex:mode architect
+```
+
+Modes:
+
+- `fast`: minimal Claude review, speed first, Codex-heavy execution
+- `balanced`: moderate orchestration and the default behavior
+- `architect`: architecture-first planning and deeper review
+
 ### `/codex:status`
 
-Shows running and recent Codex jobs for the current repository.
+Shows running and recent Codex jobs plus runtime diagnostics for the current repository.
 
 Examples:
 
@@ -247,6 +268,7 @@ Use it to:
 - check progress on background work
 - see the latest completed job
 - confirm whether a task is still running
+- inspect sandbox, approvals, write access, executor availability, current workflow, and current mode
 
 ### `/codex:result`
 
@@ -341,6 +363,20 @@ Add `codex-companion.config.json` at the workspace root, or `.codex-companion/co
     "parallelAgents": ["codex", "codex-fast"],
     "allowConcurrentWrites": false
   },
+  "mode": {
+    "default": "balanced",
+    "current": "balanced"
+  },
+  "loopProtection": {
+    "maxDepth": 4,
+    "maxIterations": 3,
+    "maxRetries": 1,
+    "timeoutMs": 900000,
+    "repeatedPromptLimit": 2
+  },
+  "metrics": {
+    "enabled": true
+  },
   "permissions": {
     "sandboxMode": "workspace-write",
     "approvalMode": "on-request",
@@ -355,6 +391,62 @@ Add `codex-companion.config.json` at the workspace root, or `.codex-companion/co
 ```
 
 Configuration is additive; omitting a field keeps the built-in default.
+
+## Execution Metrics
+
+Collaborative workflows render an execution metrics block at the end of each run. Exact provider token data is used when available; otherwise the runtime estimates token counts from prompt and output size.
+
+```text
+[SYSTEM] Execution Metrics
+
+Workflow:
+- pair
+
+Mode:
+- BALANCED
+
+Claude:
+- Input Tokens: 14211
+- Output Tokens: 2201
+
+Codex:
+- Input Tokens: 8211
+- Output Tokens: 5882
+
+Runtime:
+- 41s
+
+Files Modified:
+- 4
+
+Commands Executed:
+- 9
+
+Estimated Cost:
+- $0.31
+```
+
+Metrics currently track:
+
+- Claude input and output tokens
+- Codex input and output tokens
+- runtime duration
+- files modified
+- shell commands executed
+- estimated cost
+- workflow and mode
+
+## Loop Protection
+
+The orchestration runtime includes configurable guards for runaway workflows:
+
+- maximum orchestration depth
+- maximum workflow iterations
+- retry caps
+- timeout guards
+- repeated prompt detection
+
+If a guard triggers, the workflow stops with a clear `[SYSTEM] Loop protection triggered` diagnostic and preserves any result already captured by the job runtime.
 
 ## Permission Modes
 

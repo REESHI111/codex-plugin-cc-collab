@@ -23,6 +23,8 @@ import {
 import { readStdinIfPiped } from "./lib/fs.mjs";
 import { collectReviewContext, ensureGitRepository, resolveReviewTarget } from "./lib/git.mjs";
 import { loadOrchestrationConfig, summarizeOrchestrationConfig } from "./lib/orchestration/config.mjs";
+import { normalizeWorkflowMode, resolveWorkflowMode } from "./lib/orchestration/modes.mjs";
+import { sanitizeCommandPrompt } from "./lib/orchestration/sanitizer.mjs";
 import {
   runCodexInlineWorkflow,
   runDebateWorkflow,
@@ -91,6 +93,7 @@ function printUsage() {
       "  node scripts/codex-companion.mjs pair [--read-only|--full-power] [--claude-plan-file <file>] [--model <model|spark>] [prompt]",
       "  node scripts/codex-companion.mjs debate [--claude-proposal-file <file>] [--model <model|spark>] [prompt]",
       "  node scripts/codex-companion.mjs parallel [--read-only|--full-power] [--agents codex,codex-fast] [prompt]",
+      "  node scripts/codex-companion.mjs mode [fast|architect|balanced] [--json]",
       "  node scripts/codex-companion.mjs status [job-id] [--all] [--json]",
       "  node scripts/codex-companion.mjs result [job-id] [--json]",
       "  node scripts/codex-companion.mjs cancel [job-id] [--json]"
@@ -220,6 +223,47 @@ async function buildSetupReport(cwd, actionsTaken = []) {
     orchestration: summarizeOrchestrationConfig(loadOrchestrationConfig(workspaceRoot)),
     actionsTaken,
     nextSteps
+  };
+}
+
+function getStateOrchestrationConfig(workspaceRoot) {
+  const stateConfig = getConfig(workspaceRoot);
+  return stateConfig.orchestration && typeof stateConfig.orchestration === "object" && !Array.isArray(stateConfig.orchestration)
+    ? stateConfig.orchestration
+    : {};
+}
+
+function setWorkflowMode(workspaceRoot, mode) {
+  const normalized = normalizeWorkflowMode(mode);
+  const existing = getStateOrchestrationConfig(workspaceRoot);
+  setConfig(workspaceRoot, "orchestration", {
+    ...existing,
+    mode: {
+      ...(existing.mode ?? {}),
+      current: normalized
+    }
+  });
+  return normalized;
+}
+
+async function buildRuntimeStatus(cwd) {
+  const workspaceRoot = resolveWorkspaceRoot(cwd);
+  const config = loadOrchestrationConfig(workspaceRoot);
+  const summary = summarizeOrchestrationConfig(config);
+  const availability = getCodexAvailability(cwd);
+  const mode = resolveWorkflowMode(config);
+  const jobs = sortJobsNewestFirst(listJobs(workspaceRoot));
+  const active = jobs.find((job) => job.status === "queued" || job.status === "running");
+
+  return {
+    sandbox: summary.sandboxMode,
+    approvals: summary.approvalMode,
+    writeAccess: summary.allowFileWrites,
+    gitOperations: summary.allowGitOperations,
+    claudeExecutor: "active",
+    codexExecutor: availability.available ? "active" : `unavailable (${availability.detail})`,
+    currentWorkflow: active?.kindLabel ?? active?.kind ?? summary.defaultWorkflow,
+    currentMode: mode.id
   };
 }
 
@@ -654,12 +698,15 @@ function buildTaskRequest({ cwd, model, effort, prompt, write, resumeLast, jobId
 }
 
 function readTaskPrompt(cwd, options, positionals) {
+  let prompt = "";
   if (options["prompt-file"]) {
-    return fs.readFileSync(path.resolve(cwd, options["prompt-file"]), "utf8");
+    prompt = fs.readFileSync(path.resolve(cwd, options["prompt-file"]), "utf8");
+  } else {
+    const positionalPrompt = positionals.join(" ");
+    prompt = positionalPrompt || readStdinIfPiped();
   }
 
-  const positionalPrompt = positionals.join(" ");
-  return positionalPrompt || readStdinIfPiped();
+  return sanitizeCommandPrompt(prompt).text;
 }
 
 function readTextInput(cwd, options, { valueOption, fileOption, fallback = "" }) {
@@ -1122,7 +1169,40 @@ async function handleStatus(argv) {
   }
 
   const report = buildStatusSnapshot(cwd, { all: options.all });
-  outputResult(renderStatusPayload(report, options.json), options.json);
+  const runtimeStatus = await buildRuntimeStatus(cwd);
+  const enrichedReport = {
+    ...report,
+    runtimeStatus
+  };
+  outputResult(renderStatusPayload(enrichedReport, options.json), options.json);
+}
+
+function handleMode(argv) {
+  const { options, positionals } = parseCommandInput(argv, {
+    valueOptions: ["cwd"],
+    booleanOptions: ["json"]
+  });
+
+  const cwd = resolveCommandCwd(options);
+  const workspaceRoot = resolveCommandWorkspace(options);
+  const requested = positionals[0] ?? "";
+  if (requested) {
+    const mode = setWorkflowMode(workspaceRoot, requested);
+    const payload = {
+      mode,
+      status: "updated"
+    };
+    outputCommandResult(payload, `[SYSTEM]\nWorkflow Mode: ${mode.toUpperCase()}\n`, options.json);
+    return;
+  }
+
+  const config = loadOrchestrationConfig(workspaceRoot);
+  const mode = resolveWorkflowMode(config);
+  const payload = {
+    mode: mode.id,
+    status: "current"
+  };
+  outputCommandResult(payload, `[SYSTEM]\nWorkflow Mode: ${mode.label}\n`, options.json);
 }
 
 function handleResult(argv) {
@@ -1272,6 +1352,9 @@ async function main() {
       break;
     case "parallel":
       await handleParallel(argv);
+      break;
+    case "mode":
+      handleMode(argv);
       break;
     case "task-worker":
       await handleTaskWorker(argv);

@@ -31,7 +31,28 @@ export const DEFAULT_ORCHESTRATION_CONFIG = {
   execution: {
     timeoutMs: 0,
     retries: 0,
-    parallelAgents: ["codex"]
+    parallelAgents: ["codex"],
+    allowConcurrentWrites: false
+  },
+  mode: {
+    default: "balanced",
+    current: "balanced"
+  },
+  loopProtection: {
+    maxDepth: 4,
+    maxIterations: 3,
+    maxRetries: 1,
+    timeoutMs: 900000,
+    repeatedPromptLimit: 2
+  },
+  metrics: {
+    enabled: true,
+    costRates: {
+      claudeInputPerMTok: 3,
+      claudeOutputPerMTok: 15,
+      codexInputPerMTok: 1.25,
+      codexOutputPerMTok: 10
+    }
   },
   permissions: {
     sandboxMode: "workspace-write",
@@ -93,8 +114,8 @@ export function loadOrchestrationConfig(cwd) {
   const orchestrationState = isPlainObject(stateConfig.orchestration) ? stateConfig.orchestration : {};
 
   return mergeConfig(
-    mergeConfig(DEFAULT_ORCHESTRATION_CONFIG, orchestrationState),
-    fileConfig
+    mergeConfig(DEFAULT_ORCHESTRATION_CONFIG, fileConfig),
+    orchestrationState
   );
 }
 
@@ -107,6 +128,8 @@ export function summarizeOrchestrationConfig(config) {
     timeoutMs: config.execution?.timeoutMs ?? 0,
     retries: config.execution?.retries ?? 0,
     parallelAgents: config.execution?.parallelAgents ?? [],
+    allowConcurrentWrites: config.execution?.allowConcurrentWrites === true,
+    currentMode: config.mode?.current ?? config.mode?.default ?? "balanced",
     sandboxMode: config.permissions?.sandboxMode ?? "workspace-write",
     approvalMode: config.permissions?.approvalMode ?? "on-request",
     allowFileWrites: config.permissions?.allowFileWrites !== false,

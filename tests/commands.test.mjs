@@ -77,6 +77,7 @@ test("continue is not exposed as a user-facing command", () => {
     "cancel.md",
     "codex-inline.md",
     "debate.md",
+    "mode.md",
     "pair.md",
     "parallel.md",
     "rescue.md",
@@ -92,6 +93,7 @@ test("collaborative commands expose pair, inline, debate, and parallel workflows
   const inline = read("commands/codex-inline.md");
   const debate = read("commands/debate.md");
   const parallel = read("commands/parallel.md");
+  const mode = read("commands/mode.md");
   const readme = fs.readFileSync(path.join(ROOT, "README.md"), "utf8");
 
   assert.match(pair, /Claude analyzes the task architecturally/i);
@@ -119,12 +121,19 @@ test("collaborative commands expose pair, inline, debate, and parallel workflows
   assert.match(parallel, /--agents codex,codex-fast/);
   assert.match(parallel, /conflicting edits/i);
 
+  assert.match(mode, /fast/);
+  assert.match(mode, /architect/);
+  assert.match(mode, /balanced/);
+  assert.match(mode, /codex-companion\.mjs" mode "\$ARGUMENTS"/);
+
   assert.match(readme, /### `\/codex:pair`/);
   assert.match(readme, /### `\/codex:codex-inline`/);
   assert.match(readme, /### `\/codex:debate`/);
   assert.match(readme, /### `\/codex:parallel`/);
+  assert.match(readme, /### `\/codex:mode`/);
   assert.match(readme, /ModelExecutor/);
   assert.match(readme, /codex-companion\.config\.json/);
+  assert.match(readme, /\[SYSTEM\] Execution Metrics/);
   assert.match(readme, /sandboxMode": "workspace-write/);
   assert.match(readme, /approvalMode": "on-request/);
   assert.match(readme, /Full power mode disables sandbox restrictions/i);

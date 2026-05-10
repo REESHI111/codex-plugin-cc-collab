@@ -1,3 +1,5 @@
+import { renderExecutionMetrics } from "./orchestration/metrics.mjs";
+
 function severityRank(severity) {
   switch (severity) {
     case "critical":
@@ -333,8 +335,10 @@ function appendModelBlock(lines, title, output) {
 }
 
 export function renderCollaborationResult(result) {
+  const metricsBlock = renderExecutionMetrics(result.metrics);
   if (result.workflow === "codex-inline") {
-    return renderTaskResult({ rawOutput: result.codex?.rawOutput ?? "" }, {});
+    const output = renderTaskResult({ rawOutput: result.codex?.rawOutput ?? "" }, {}).trimEnd();
+    return `${[output, metricsBlock].filter(Boolean).join("\n\n")}\n`;
   }
 
   const title = {
@@ -372,6 +376,10 @@ export function renderCollaborationResult(result) {
     }
   }
 
+  if (metricsBlock) {
+    lines.push("", metricsBlock);
+  }
+
   return `${lines.join("\n").trimEnd()}\n`;
 }
 
@@ -383,6 +391,34 @@ export function renderStatusReport(report) {
     `Review gate: ${report.config.stopReviewGate ? "enabled" : "disabled"}`,
     ""
   ];
+
+  if (report.runtimeStatus) {
+    lines.push("[SYSTEM] Runtime Status", "");
+    lines.push("Sandbox:");
+    lines.push(`- ${report.runtimeStatus.sandbox}`);
+    lines.push("");
+    lines.push("Approvals:");
+    lines.push(`- ${report.runtimeStatus.approvals}`);
+    lines.push("");
+    lines.push("Write Access:");
+    lines.push(`- ${report.runtimeStatus.writeAccess ? "enabled" : "disabled"}`);
+    lines.push("");
+    lines.push("Git Operations:");
+    lines.push(`- ${report.runtimeStatus.gitOperations ? "enabled" : "disabled"}`);
+    lines.push("");
+    lines.push("Claude Executor:");
+    lines.push(`- ${report.runtimeStatus.claudeExecutor}`);
+    lines.push("");
+    lines.push("Codex Executor:");
+    lines.push(`- ${report.runtimeStatus.codexExecutor}`);
+    lines.push("");
+    lines.push("Current Workflow:");
+    lines.push(`- ${report.runtimeStatus.currentWorkflow}`);
+    lines.push("");
+    lines.push("Current Mode:");
+    lines.push(`- ${report.runtimeStatus.currentMode}`);
+    lines.push("");
+  }
 
   if (report.running.length > 0) {
     appendActiveJobsTable(lines, report.running);

@@ -5,6 +5,9 @@ import {
   buildParallelAgentPrompt
 } from "./prompts.mjs";
 import { createExecutor } from "./executors.mjs";
+import { createLoopGuard, resolveLoopLimits } from "./loop-protection.mjs";
+import { createMetricsCollector } from "./metrics.mjs";
+import { applyWorkflowMode, resolveWorkflowMode } from "./modes.mjs";
 import { buildPermissionProfile } from "./permissions.mjs";
 
 function firstLine(text, fallback) {
@@ -25,8 +28,9 @@ function getProvider(config, providerId) {
 }
 
 function buildExecutionOptions(config, options = {}) {
+  const loopLimits = resolveLoopLimits(config);
   return {
-    retries: options.retries ?? config.execution?.retries ?? 0,
+    retries: Math.min(Number(options.retries ?? config.execution?.retries ?? 0) || 0, loopLimits.maxRetries),
     timeoutMs: options.timeoutMs ?? config.execution?.timeoutMs ?? 0
   };
 }
@@ -41,18 +45,28 @@ function normalizeCodexResult(result, label) {
     reasoningSummary: result.reasoningSummary ?? [],
     touchedFiles: result.touchedFiles ?? [],
     permissionProfile: result.permissionProfile ?? null,
-    permissionIssue: result.permissionIssue ?? null
+    permissionIssue: result.permissionIssue ?? null,
+    commandExecutions: result.commandExecutions ?? []
   };
 }
 
 export async function runCodexInlineWorkflow({ cwd, task, write = true, model, effort, config, permissionOptions, onProgress }) {
+  const mode = resolveWorkflowMode(config);
+  config = applyWorkflowMode(config, mode.id);
+  const loopGuard = createLoopGuard(config);
+  loopGuard.assertCanStart("codex-inline");
+  loopGuard.trackIteration("codex-inline");
+  loopGuard.trackPrompt(task);
+  const metrics = createMetricsCollector(config);
+  metrics.startExecution({ workflow: "codex-inline", mode: mode.id });
   const providerId = config.routing?.implementer ?? "codex";
   const provider = getProvider(config, providerId);
   const executor = createExecutor(providerId, provider);
   const prompt = buildCodexInlinePrompt({
     task,
-    strategyName: config.prompting?.strategy === "rigorous" ? "concise" : "fast"
+    strategyName: mode.id === "architect" ? "concise" : "fast"
   });
+  metrics.trackModelUsage("codex", { inputText: prompt });
   const permissionProfile = buildPermissionProfile(config, {
     allowFileWrites: write !== false,
     ...permissionOptions
@@ -74,11 +88,15 @@ export async function runCodexInlineWorkflow({ cwd, task, write = true, model, e
       ...buildExecutionOptions(config)
     }
   );
+  metrics.absorbCodexResult(result);
+  const finalMetrics = metrics.finishExecution();
 
   return {
     workflow: "codex-inline",
+    mode: mode.id,
     summary: firstLine(result.finalMessage, "Codex inline task completed."),
-    codex: normalizeCodexResult(result, executor.label)
+    codex: normalizeCodexResult(result, executor.label),
+    metrics: finalMetrics
   };
 }
 
@@ -87,14 +105,28 @@ export async function runPairWorkflow({ cwd, task, claudePlan, write = true, mod
     throw new Error("Pair workflow requires --claude-plan or piped Claude plan text.");
   }
 
+  const mode = resolveWorkflowMode(config);
+  config = applyWorkflowMode(config, mode.id);
+  const loopGuard = createLoopGuard(config);
+  loopGuard.assertCanStart("pair");
+  loopGuard.trackIteration("pair");
+  loopGuard.trackPrompt(`${task}\n${claudePlan}`);
+  const metrics = createMetricsCollector(config);
+  metrics.startExecution({ workflow: "pair", mode: mode.id });
+  metrics.trackModelUsage("claude", {
+    inputText: task,
+    outputText: claudePlan
+  });
+
   const providerId = config.routing?.implementer ?? "codex";
   const provider = getProvider(config, providerId);
   const executor = createExecutor(providerId, provider);
   const prompt = buildPairImplementationPrompt({
     task,
     claudePlan,
-    strategyName: config.prompting?.strategy ?? "concise"
+    strategyName: mode.promptStrategy
   });
+  metrics.trackModelUsage("codex", { inputText: prompt });
 
   const permissionProfile = buildPermissionProfile(config, {
     allowFileWrites: write !== false,
@@ -117,13 +149,17 @@ export async function runPairWorkflow({ cwd, task, claudePlan, write = true, mod
       ...buildExecutionOptions(config)
     }
   );
+  metrics.absorbCodexResult(result);
+  const finalMetrics = metrics.finishExecution();
 
   return {
     workflow: "pair",
+    mode: mode.id,
     summary: firstLine(result.finalMessage, "Pair implementation completed."),
     task,
     claudePlan,
-    codex: normalizeCodexResult(result, executor.label)
+    codex: normalizeCodexResult(result, executor.label),
+    metrics: finalMetrics
   };
 }
 
@@ -132,14 +168,28 @@ export async function runDebateWorkflow({ cwd, task, claudeProposal, model, effo
     throw new Error("Debate workflow requires --claude-proposal or piped Claude proposal text.");
   }
 
+  const mode = resolveWorkflowMode(config);
+  config = applyWorkflowMode(config, mode.id);
+  const loopGuard = createLoopGuard(config);
+  loopGuard.assertCanStart("debate");
+  loopGuard.trackIteration("debate");
+  loopGuard.trackPrompt(`${task}\n${claudeProposal}`);
+  const metrics = createMetricsCollector(config);
+  metrics.startExecution({ workflow: "debate", mode: mode.id });
+  metrics.trackModelUsage("claude", {
+    inputText: task,
+    outputText: claudeProposal
+  });
+
   const providerId = config.routing?.implementer ?? "codex";
   const provider = getProvider(config, providerId);
   const executor = createExecutor(providerId, provider);
   const prompt = buildDebateAlternativePrompt({
     task,
     claudeProposal,
-    strategyName: config.prompting?.strategy ?? "rigorous"
+    strategyName: mode.id === "fast" ? "concise" : "rigorous"
   });
+  metrics.trackModelUsage("codex", { inputText: prompt });
 
   onProgress?.({ message: `[CODEX] Preparing alternative proposal.`, phase: "debating" });
   const result = await executor.executeTask(
@@ -160,17 +210,29 @@ export async function runDebateWorkflow({ cwd, task, claudeProposal, model, effo
       ...buildExecutionOptions(config)
     }
   );
+  metrics.absorbCodexResult(result);
+  const finalMetrics = metrics.finishExecution();
 
   return {
     workflow: "debate",
+    mode: mode.id,
     summary: firstLine(result.finalMessage, "Debate alternative completed."),
     task,
     claudeProposal,
-    codex: normalizeCodexResult(result, executor.label)
+    codex: normalizeCodexResult(result, executor.label),
+    metrics: finalMetrics
   };
 }
 
 export async function runParallelWorkflow({ cwd, task, agents, write = true, model, effort, config, permissionOptions, onProgress }) {
+  const mode = resolveWorkflowMode(config);
+  config = applyWorkflowMode(config, mode.id);
+  const loopGuard = createLoopGuard(config);
+  loopGuard.assertCanStart("parallel");
+  loopGuard.trackIteration("parallel");
+  loopGuard.trackPrompt(task);
+  const metrics = createMetricsCollector(config);
+  metrics.startExecution({ workflow: "parallel", mode: mode.id });
   const configuredAgents = agents?.length ? agents : config.execution?.parallelAgents ?? ["codex"];
   const uniqueAgents = [...new Set(configuredAgents)];
   if (uniqueAgents.length === 0) {
@@ -188,8 +250,9 @@ export async function runParallelWorkflow({ cwd, task, agents, write = true, mod
     const prompt = buildParallelAgentPrompt({
       task,
       agentLabel: executor.label,
-      strategyName: config.prompting?.strategy ?? "concise"
+      strategyName: mode.promptStrategy
     });
+    metrics.trackModelUsage("codex", { inputText: prompt });
     const permissionProfile = buildPermissionProfile(config, {
       allowFileWrites: write !== false,
       ...permissionOptions
@@ -233,11 +296,23 @@ export async function runParallelWorkflow({ cwd, task, agents, write = true, mod
       touchedFiles: []
     };
   });
+  for (const output of outputs) {
+    metrics.trackModelUsage("codex", { outputText: output.rawOutput });
+    for (const filePath of output.touchedFiles ?? []) {
+      metrics.trackFileChange(filePath);
+    }
+    for (const command of output.commandExecutions ?? []) {
+      metrics.trackShellCommand(command.command);
+    }
+  }
+  const finalMetrics = metrics.finishExecution();
 
   return {
     workflow: "parallel",
+    mode: mode.id,
     summary: `${outputs.filter((output) => output.ok).length}/${outputs.length} parallel agent(s) completed.`,
     task,
-    outputs
+    outputs,
+    metrics: finalMetrics
   };
 }
