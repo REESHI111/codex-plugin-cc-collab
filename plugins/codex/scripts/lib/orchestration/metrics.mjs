@@ -54,6 +54,7 @@ export function createMetricsCollector(config = {}) {
       averageGraphHitRate: 0,
       highestConfidence: "NONE"
     },
+    timeline: [],
     filesModified: [],
     shellCommands: [],
     estimatedCost: 0
@@ -81,8 +82,24 @@ export function createMetricsCollector(config = {}) {
         metrics.filesModified.push(String(filePath));
       }
     },
+    trackStage(stage, detail = {}) {
+      metrics.timeline.push({
+        stage: String(stage ?? "stage"),
+        at: new Date().toISOString(),
+        ...detail
+      });
+    },
     trackGraphContext(context = {}) {
       const analytics = context.analytics ?? context.retrieval ?? null;
+      if (context.trace) {
+        this.trackStage("graph-context-retrieval", {
+          durationMs: context.trace.durationMs,
+          injected: context.injected === true,
+          confidence: context.trace.confidence,
+          nodeCount: context.trace.nodeCount,
+          edgeCount: context.trace.edgeCount
+        });
+      }
       if (!context.injected || !analytics) {
         metrics.graphContext.skippedCount += 1;
         return;
@@ -214,6 +231,18 @@ export function renderExecutionMetrics(metrics) {
       "Retrieval Confidence:",
       `- ${graph.highestConfidence ?? "NONE"}`
     );
+  }
+  if (metrics.timeline?.length) {
+    lines.push("", "[SYSTEM] Execution Timeline", "");
+    for (const event of metrics.timeline.slice(-8)) {
+      const duration = Number.isFinite(Number(event.durationMs)) ? ` (${Math.round(Number(event.durationMs))}ms)` : "";
+      const detail = [
+        typeof event.injected === "boolean" ? `injected:${event.injected ? "yes" : "no"}` : "",
+        event.confidence ? `confidence:${event.confidence}` : "",
+        Number.isFinite(Number(event.nodeCount)) ? `nodes:${event.nodeCount}` : ""
+      ].filter(Boolean).join(", ");
+      lines.push(`- ${event.stage}${duration}${detail ? ` - ${detail}` : ""}`);
+    }
   }
   return lines.join("\n");
 }

@@ -598,6 +598,7 @@ Current behavior:
 - `/codex:graph update` refreshes the current workspace graph
 - `/codex:graph query`, `explain`, and `path` retrieve compact graph context
 - `/codex:graph context` combines graph relationships with relevant prior orchestration memory
+- `/codex:graph stress [query]` runs repeated retrieval checks and reports latency, token overruns, failures, and stability
 - collaborative prompts receive task-scoped graph context when `injectIntoPrompts` is enabled
 - graph retrieval ranks seed nodes by task relevance, applies architecture-aware boosts, expands only bounded neighborhoods, and shows node scores/reasons when `showRetrievalScores=true`
 - graph prompt injection uses mode-aware context budgets: fast mode compresses aggressively, balanced mode keeps moderate detail, and architect mode explores deeper graph neighborhoods
@@ -685,6 +686,10 @@ Retrieval Usefulness:
 
 Retrieval Confidence:
 - HIGH
+
+[SYSTEM] Execution Timeline
+
+- graph-context-retrieval (23ms) - injected:yes, confidence:HIGH, nodes:18
 ```
 
 Metrics currently track:
@@ -700,6 +705,15 @@ Metrics currently track:
 - graph context compression percentage
 - estimated token savings versus uncompressed graph output
 - graph hit rate, retrieval usefulness score, and confidence
+- graph retrieval timeline entries for debugging context injection behavior
+
+Graph stress diagnostics:
+
+```bash
+/codex:graph stress auth client --iterations 20 --token-budget 1200 --mode fast
+```
+
+The stress diagnostic repeatedly exercises bounded retrieval and reports average latency, p95 latency, failures, token budget overruns, max retrieved nodes, and max estimated context tokens. Use it after large refactors, graph rebuilds, or provider changes to catch retrieval drift, token spikes, or slowdowns.
 
 ## Loop Protection
 
@@ -879,6 +893,8 @@ This collaborative runtime now includes:
 - relevance-ranked graph retrieval with bounded node/edge selection and visible retrieval reasons
 - token-aware graph compression with fast/balanced/architect retrieval profiles
 - graph context effectiveness analytics in execution metrics
+- graph observability traces for context retrieval, prompt injection, and graph sync timing
+- `/codex:graph stress` diagnostics for large-repo retrieval stability checks
 - execution memory saved under `graphify-out/memory/orchestration/`
 - `/codex:graph context` retrieval that combines graph relationships with prior workflow memory
 - graph update locking, pending-update recovery, stale lock handling, and parallel write-conflict diagnostics
@@ -915,7 +931,7 @@ Use this section to verify what was implemented across the architecture upgrade:
    Workflow summaries are saved under `graphify-out/memory/orchestration/` and retrieved with graph context for future tasks. Execution metrics now also report graph retrieval effectiveness, token savings, hit rate, and usefulness score.
 
 9. **Live synchronization safety**  
-   Added graph update locking, pending-update recovery, stale lock handling, failed-update requeueing, parallel write-conflict diagnostics, workflow background sync, and session-end sync for external edits.
+   Added graph update locking, pending-update recovery, stale lock handling, failed-update requeueing, parallel write-conflict diagnostics, workflow background sync, session-end sync for external edits, and graph sync timing traces.
 
 10. **Bootstrap, config, and packaging hardening**  
-    Added `/codex:graph config`, `enable`, `disable`, and `init`; documented dependency checks, first-run flow, and final feature summary; updated plugin/package descriptions for the collaborative memory runtime.
+    Added `/codex:graph config`, `enable`, `disable`, `init`, and `stress`; documented dependency checks, first-run flow, stress diagnostics, and final feature summary; updated plugin/package descriptions for the collaborative memory runtime.

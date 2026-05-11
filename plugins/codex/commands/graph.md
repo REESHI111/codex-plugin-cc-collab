@@ -1,6 +1,6 @@
 ---
 description: Query and inspect the orchestration context graph
-argument-hint: 'status|config|enable|disable|init [--install]|update|query|explain|path|context [args]'
+argument-hint: 'status|config|enable|disable|init [--install]|update|query|explain|path|context|stress [args]'
 disable-model-invocation: true
 allowed-tools: Bash(node:*)
 ---
@@ -22,6 +22,7 @@ Supported commands:
 - `explain <node>`: inspect a matching graph node and its neighbors
 - `path <source> <target>`: find the shortest graph path between two labels
 - `context <task>`: retrieve task-scoped graph context for Claude/Codex prompting
+- `stress [query]`: run repeated bounded retrieval checks and report latency, token spikes, and stability
 
 Run:
 

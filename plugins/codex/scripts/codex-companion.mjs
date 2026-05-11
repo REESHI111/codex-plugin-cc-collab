@@ -26,7 +26,8 @@ import { loadOrchestrationConfig, summarizeOrchestrationConfig } from "./lib/orc
 import {
   buildRecommendedContextGraphConfig,
   createContextGraphProvider,
-  GraphifyContextProvider
+  GraphifyContextProvider,
+  runContextGraphStressTest
 } from "./lib/orchestration/context-graph.mjs";
 import { normalizeWorkflowMode, resolveWorkflowMode } from "./lib/orchestration/modes.mjs";
 import { sanitizeCommandPrompt } from "./lib/orchestration/sanitizer.mjs";
@@ -98,7 +99,7 @@ function printUsage() {
       "  node scripts/codex-companion.mjs pair [--read-only|--full-power] [--claude-plan-file <file>] [--model <model|spark>] [prompt]",
       "  node scripts/codex-companion.mjs debate [--claude-proposal-file <file>] [--model <model|spark>] [prompt]",
       "  node scripts/codex-companion.mjs parallel [--read-only|--full-power] [--agents codex,codex-fast] [prompt]",
-      "  node scripts/codex-companion.mjs graph <status|config|enable|disable|init|update|query|explain|path|context> [args]",
+      "  node scripts/codex-companion.mjs graph <status|config|enable|disable|init|update|query|explain|path|context|stress> [args]",
       "  node scripts/codex-companion.mjs ccv [--json]",
       "  node scripts/codex-companion.mjs upgrade [--json]",
       "  node scripts/codex-companion.mjs mode [fast|architect|balanced] [--json]",
@@ -770,6 +771,30 @@ function renderGraphPayload(payload) {
     return `${lines.join("\n").trimEnd()}\n`;
   }
 
+  if (payload.command === "stress") {
+    const result = payload.result;
+    lines.push(result.ok ? "Context graph stress test passed." : "Context graph stress test found issues.");
+    lines.push("");
+    lines.push(`- Mode: ${String(result.mode ?? "balanced").toUpperCase()}`);
+    lines.push(`- Iterations: ${result.iterations}`);
+    lines.push(`- Query Count: ${result.queryCount}`);
+    lines.push(`- Average Query Time: ${result.averageMs}ms`);
+    lines.push(`- P95 Query Time: ${result.p95Ms}ms`);
+    lines.push(`- Max Estimated Tokens: ${result.maxEstimatedTokens}`);
+    lines.push(`- Max Retrieved Nodes: ${result.maxNodeCount}`);
+    lines.push(`- Failures: ${result.failures}`);
+    lines.push(`- Token Budget Overruns: ${result.tokenBudgetOverruns}`);
+    lines.push(`- Stable: ${result.stable ? "yes" : "no"}`);
+    lines.push(`- Detail: ${result.detail}`);
+    if (result.runs?.length) {
+      lines.push("", "Recent runs:");
+      for (const run of result.runs.slice(-5)) {
+        lines.push(`- ${run.ok ? "ok" : "failed"} ${run.durationMs}ms nodes:${run.nodeCount} tokens:${run.estimatedTokens}/${run.tokenBudget} ${run.query}${run.error ? ` - ${run.error}` : ""}`);
+      }
+    }
+    return `${lines.join("\n").trimEnd()}\n`;
+  }
+
   if (!payload.result?.ok) {
     lines.push(payload.result?.error ?? payload.result?.detail ?? "Graph command failed.");
     return `${lines.join("\n").trimEnd()}\n`;
@@ -1314,7 +1339,7 @@ async function handleParallel(argv) {
 
 async function handleGraph(argv) {
   const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["cwd", "token-budget", "depth"],
+    valueOptions: ["cwd", "token-budget", "depth", "iterations", "mode"],
     booleanOptions: ["json", "force", "install"]
   });
 
@@ -1422,6 +1447,20 @@ async function handleGraph(argv) {
         depth: options.depth
       })
     };
+  } else if (command === "stress") {
+    const query = rest.join(" ").trim();
+    payload = {
+      command,
+      query,
+      result: await runContextGraphStressTest({
+        cwd: workspaceRoot,
+        config,
+        queries: query ? [query] : [],
+        iterations: options.iterations,
+        tokenBudget: options["token-budget"],
+        mode: options.mode ?? config.mode?.current ?? config.mode?.default
+      })
+    };
   } else if (command === "explain") {
     const query = rest.join(" ").trim();
     if (!query) {
@@ -1451,7 +1490,7 @@ async function handleGraph(argv) {
       })
     };
   } else {
-    throw new Error(`Unknown graph command "${command}". Use status, config, enable, disable, init, update, query, explain, path, or context.`);
+    throw new Error(`Unknown graph command "${command}". Use status, config, enable, disable, init, update, query, explain, path, context, or stress.`);
   }
 
   outputCommandResult(payload, renderGraphPayload(payload), options.json);

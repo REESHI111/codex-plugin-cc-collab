@@ -241,6 +241,20 @@ function readJsonSafe(filePath, fallback) {
   }
 }
 
+function nowIso() {
+  return new Date().toISOString();
+}
+
+function finishTrace(trace, extra = {}) {
+  const finishedAt = nowIso();
+  return {
+    ...trace,
+    ...extra,
+    finishedAt,
+    durationMs: Math.max(0, Date.parse(finishedAt) - Date.parse(trace.startedAt))
+  };
+}
+
 function writeJsonAtomic(filePath, value) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   const tmpPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
@@ -998,11 +1012,18 @@ function acquireFileLock(lockPath, options = {}) {
 }
 
 function runJsGraphQuery(graphPath, request) {
+  const trace = {
+    phase: "graph-query",
+    provider: "graphify-js",
+    action: request.action,
+    query: request.query ?? request.source ?? "",
+    startedAt: nowIso()
+  };
   const graph = normalizeGraphData(readJsonIfExists(graphPath) ?? {});
   if (request.action === "explain") {
     const node = findBestNode(graph, request.query);
     if (!node) {
-      return { ok: false, error: "No matching graph node found." };
+      return { ok: false, error: "No matching graph node found.", trace: finishTrace(trace, { ok: false }) };
     }
     const neighbors = adjacency(graph.edges).get(node.id)?.slice(0, 20).map(({ node: id, edge }) => ({
       id,
@@ -1010,14 +1031,14 @@ function runJsGraphQuery(graphPath, request) {
       relation: edge.relation,
       source_file: graph.nodeMap.get(id)?.source_file ?? ""
     })) ?? [];
-    return { ok: true, action: "explain", node, neighbors };
+    return { ok: true, action: "explain", node, neighbors, trace: finishTrace(trace, { ok: true, nodeCount: 1, edgeCount: neighbors.length }) };
   }
 
   if (request.action === "path") {
     const source = findBestNode(graph, request.source);
     const target = findBestNode(graph, request.target);
     if (!source || !target) {
-      return { ok: false, error: "Source or target node was not found." };
+      return { ok: false, error: "Source or target node was not found.", trace: finishTrace(trace, { ok: false }) };
     }
     const adj = adjacency(graph.edges);
     const queue = [{ id: source.id, path: [] }];
@@ -1025,7 +1046,7 @@ function runJsGraphQuery(graphPath, request) {
     while (queue.length) {
       const current = queue.shift();
       if (current.id === target.id) {
-        return { ok: true, action: "path", path: current.path };
+        return { ok: true, action: "path", path: current.path, trace: finishTrace(trace, { ok: true, edgeCount: current.path.length }) };
       }
       for (const next of adj.get(current.id) ?? []) {
         if (seen.has(next.node)) {
@@ -1049,12 +1070,12 @@ function runJsGraphQuery(graphPath, request) {
         });
       }
     }
-    return { ok: false, error: "No graph path found." };
+    return { ok: false, error: "No graph path found.", trace: finishTrace(trace, { ok: false }) };
   }
 
   const plan = buildRetrievalPlan(graph, request.query, request);
   if (plan.seeds.length === 0 || plan.nodes.length === 0) {
-    return { ok: false, error: "No matching graph region found." };
+    return { ok: false, error: "No matching graph region found.", trace: finishTrace(trace, { ok: false, graphNodeCount: graph.nodes.length, graphEdgeCount: graph.edges.length }) };
   }
   const rendered = renderRetrievalText(graph, plan, request.query);
   const analytics = buildRetrievalAnalytics(plan, rendered);
@@ -1085,6 +1106,15 @@ function runJsGraphQuery(graphPath, request) {
       compressedEdgeCount: rendered.compressedEdgeCount,
       truncated: rendered.truncated === true
     },
+    trace: finishTrace(trace, {
+      ok: true,
+      mode: plan.limits.mode,
+      tokenBudget: plan.limits.tokenBudget,
+      nodeCount: plan.nodes.length,
+      edgeCount: plan.edges.length,
+      estimatedTokens: rendered.estimatedTokens,
+      confidence: plan.confidence
+    }),
     text: rendered.text
   };
 }
@@ -1460,10 +1490,17 @@ export class GraphifyContextProvider extends ContextGraphProvider {
   }
 
   async updateFiles(files = [], options = {}) {
+    const trace = {
+      phase: "graph-sync",
+      provider: this.id,
+      reason: options.reason ?? "workflow",
+      startedAt: nowIso()
+    };
     if (!isEnabled(this.config)) {
       return {
         ok: false,
         skipped: true,
+        trace: finishTrace(trace, { ok: false, skipped: true }),
         detail: "Context graph is disabled."
       };
     }
@@ -1474,6 +1511,7 @@ export class GraphifyContextProvider extends ContextGraphProvider {
         ok: true,
         skipped: true,
         changedFiles,
+        trace: finishTrace(trace, { ok: true, skipped: true, changedFileCount: 0 }),
         detail: "No changed files were reported."
       };
     }
@@ -1493,6 +1531,7 @@ export class GraphifyContextProvider extends ContextGraphProvider {
           pending: true,
           changedFiles,
           lockPath: this.lockPath,
+          trace: finishTrace(trace, { ok: false, skipped: true, lockBusy: true, changedFileCount: changedFiles.length }),
           detail: "Context graph update is already running; recorded changed files for the next sync."
         };
       }
@@ -1525,6 +1564,12 @@ export class GraphifyContextProvider extends ContextGraphProvider {
         status: result.status,
         stdout: result.stdout,
         stderr: result.stderr,
+        trace: finishTrace(trace, {
+          ok,
+          changedFileCount: changedFiles.length,
+          pendingFileCount: pending.files.length,
+          status: result.status
+        }),
         detail: ok
           ? `Updated context graph for ${changedFiles.length} changed file(s).`
           : result.error?.message ?? result.stderr.trim() ?? result.stdout.trim() ?? `graphify exited ${result.status}`
@@ -1535,10 +1580,17 @@ export class GraphifyContextProvider extends ContextGraphProvider {
   }
 
   async enqueueUpdate(files = [], options = {}) {
+    const trace = {
+      phase: "graph-sync-queue",
+      provider: this.id,
+      reason: options.reason ?? "background-sync",
+      startedAt: nowIso()
+    };
     if (!isEnabled(this.config)) {
       return {
         ok: false,
         skipped: true,
+        trace: finishTrace(trace, { ok: false, skipped: true }),
         detail: "Context graph is disabled."
       };
     }
@@ -1549,6 +1601,7 @@ export class GraphifyContextProvider extends ContextGraphProvider {
         ok: true,
         skipped: true,
         changedFiles,
+        trace: finishTrace(trace, { ok: true, skipped: true, changedFileCount: 0 }),
         detail: "No changed files were reported."
       };
     }
@@ -1560,6 +1613,7 @@ export class GraphifyContextProvider extends ContextGraphProvider {
         queued: true,
         workerStarted: false,
         changedFiles,
+        trace: finishTrace(trace, { ok: false, queued: true, workerStarted: false, changedFileCount: changedFiles.length }),
         detail: "Recorded pending graph update, but no companion worker script was available."
       };
     }
@@ -1577,6 +1631,7 @@ export class GraphifyContextProvider extends ContextGraphProvider {
       workerStarted: true,
       pid: child.pid ?? null,
       changedFiles,
+      trace: finishTrace(trace, { ok: true, queued: true, workerStarted: true, changedFileCount: changedFiles.length }),
       detail: `Queued background context graph sync for ${changedFiles.length} changed file(s).`
     };
   }
@@ -1902,9 +1957,16 @@ export function detectParallelWriteConflicts(outputs = []) {
 }
 
 export async function updateContextGraphAfterWorkflow({ cwd, config, workflowResult, onProgress } = {}) {
+  const trace = {
+    phase: "workflow-graph-sync",
+    workflow: workflowResult?.workflow ?? "workflow",
+    startedAt: nowIso()
+  };
   const provider = createContextGraphProvider({ cwd, config });
   if (!isEnabled(config)) {
-    return null;
+    return {
+      trace: finishTrace(trace, { ok: true, skipped: true, detail: "Context graph is disabled." })
+    };
   }
   const files = workflowResult?.metrics?.filesModified ?? workflowResult?.codex?.touchedFiles ?? [];
   const conflicts = workflowResult?.workflow === "parallel"
@@ -1935,17 +1997,147 @@ export async function updateContextGraphAfterWorkflow({ cwd, config, workflowRes
   return {
     update,
     memory,
-    conflicts
+    conflicts,
+    trace: finishTrace(trace, {
+      ok: update?.ok !== false,
+      backgroundSync,
+      changedFileCount: files.length,
+      conflictCount: conflicts.length,
+      updateDurationMs: update?.trace?.durationMs ?? 0
+    })
+  };
+}
+
+function percentile(values, p) {
+  if (!values.length) {
+    return 0;
+  }
+  const sorted = [...values].sort((left, right) => left - right);
+  const index = Math.min(sorted.length - 1, Math.max(0, Math.ceil((p / 100) * sorted.length) - 1));
+  return sorted[index];
+}
+
+export async function runContextGraphStressTest({ cwd, config, queries = [], iterations = 12, tokenBudget, mode = "balanced" } = {}) {
+  const provider = createContextGraphProvider({ cwd, config });
+  const status = await provider.getStatus();
+  const activeMode = normalizeRetrievalMode(mode);
+  const graphConfig = config?.contextGraph ?? {};
+  const budget = Number(tokenBudget ?? graphConfig.tokenBudgetByMode?.[activeMode] ?? graphConfig.queryTokenBudget ?? retrievalModeProfile(activeMode).tokenBudget);
+  if (!status.enabled || !status.graphExists) {
+    return {
+      ok: false,
+      status,
+      mode: activeMode,
+      iterations: 0,
+      queryCount: 0,
+      startedAt: nowIso(),
+      finishedAt: nowIso(),
+      averageMs: 0,
+      p95Ms: 0,
+      maxEstimatedTokens: 0,
+      maxNodeCount: 0,
+      failures: 0,
+      tokenBudgetOverruns: 0,
+      stable: false,
+      runs: [],
+      detail: status.enabled
+        ? "Context graph stress test requires a built graph. Run `/codex:graph init` first."
+        : "Context graph stress test requires contextGraph.enabled=true. Run `/codex:graph enable` first."
+    };
+  }
+  const querySet = queries.length
+    ? queries.map((query) => String(query)).filter(Boolean)
+    : [
+        "architecture workflow provider",
+        "auth client transport",
+        "configuration runtime graph",
+        "memory orchestration update"
+      ];
+  const count = Math.max(1, Math.min(200, Number(iterations) || 12));
+  const startedAt = nowIso();
+  const runs = [];
+
+  for (let index = 0; index < count; index += 1) {
+    const query = querySet[index % querySet.length];
+    const runStarted = Date.now();
+    try {
+      const result = await provider.queryGraph(query, {
+        mode: activeMode,
+        tokenBudget: budget
+      });
+      runs.push({
+        ok: result.ok === true,
+        query,
+        durationMs: Date.now() - runStarted,
+        nodeCount: result.retrieval?.nodeCount ?? 0,
+        edgeCount: result.retrieval?.edgeCount ?? 0,
+        estimatedTokens: result.retrieval?.estimatedTokens ?? 0,
+        tokenBudget: result.retrieval?.tokenBudget ?? budget,
+        confidence: result.retrieval?.confidence ?? "LOW",
+        error: result.ok ? null : result.error ?? "query failed"
+      });
+    } catch (error) {
+      runs.push({
+        ok: false,
+        query,
+        durationMs: Date.now() - runStarted,
+        nodeCount: 0,
+        edgeCount: 0,
+        estimatedTokens: 0,
+        tokenBudget: budget,
+        confidence: "LOW",
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
+  }
+
+  const durations = runs.map((run) => run.durationMs);
+  const failures = runs.filter((run) => !run.ok);
+  const tokenBudgetOverruns = runs.filter((run) => run.estimatedTokens > run.tokenBudget);
+  const maxEstimatedTokens = Math.max(0, ...runs.map((run) => run.estimatedTokens));
+  const maxNodeCount = Math.max(0, ...runs.map((run) => run.nodeCount));
+  const averageMs = durations.length
+    ? Math.round(durations.reduce((sum, value) => sum + value, 0) / durations.length)
+    : 0;
+  const p95Ms = percentile(durations, 95);
+  const stable = failures.length === 0 && tokenBudgetOverruns.length === 0 && p95Ms < Number(graphConfig.stressP95Ms ?? 1500);
+
+  return {
+    ok: stable,
+    status,
+    mode: activeMode,
+    iterations: count,
+    queryCount: querySet.length,
+    startedAt,
+    finishedAt: nowIso(),
+    averageMs,
+    p95Ms,
+    maxEstimatedTokens,
+    maxNodeCount,
+    failures: failures.length,
+    tokenBudgetOverruns: tokenBudgetOverruns.length,
+    stable,
+    runs: runs.slice(-10),
+    detail: stable
+      ? "Context graph stress test stayed within latency and token bounds."
+      : "Context graph stress test found stability concerns."
   };
 }
 
 export async function retrieveContextGraphForTask({ cwd, config, task, workflow, mode, onProgress } = {}) {
+  const trace = {
+    phase: "prompt-context-retrieval",
+    workflow: workflow ?? "unknown",
+    mode: normalizeRetrievalMode(mode),
+    startedAt: nowIso()
+  };
   const graphConfig = config?.contextGraph ?? {};
   if (graphConfig.enabled !== true || graphConfig.injectIntoPrompts === false) {
     return {
       enabled: graphConfig.enabled === true,
       injected: false,
       text: "",
+      trace: finishTrace(trace, { injected: false, skipped: true }),
       detail: graphConfig.enabled === true ? "Prompt injection is disabled." : "Context graph is disabled."
     };
   }
@@ -1958,6 +2150,7 @@ export async function retrieveContextGraphForTask({ cwd, config, task, workflow,
       injected: false,
       text: "",
       status,
+      trace: finishTrace(trace, { injected: false, skipped: true, graphExists: false }),
       detail: "Context graph has not been built yet."
     };
   }
@@ -1993,6 +2186,7 @@ export async function retrieveContextGraphForTask({ cwd, config, task, workflow,
       text: "",
       status,
       error: result.error,
+      trace: finishTrace(trace, { injected: false, ok: false, error: result.error }),
       detail: result.error ?? "No relevant graph context found."
     };
   }
@@ -2006,6 +2200,15 @@ export async function retrieveContextGraphForTask({ cwd, config, task, workflow,
     mode: activeMode,
     analytics: result.analytics,
     budget: result.budget,
+    trace: finishTrace(trace, {
+      injected: true,
+      ok: true,
+      tokenBudget,
+      graphBudget: result.budget?.graphBudget,
+      nodeCount: result.analytics?.nodeCount ?? 0,
+      edgeCount: result.analytics?.edgeCount ?? 0,
+      confidence: result.analytics?.confidence ?? "LOW"
+    }),
     detail: "Injected task-scoped graph context."
   };
 }

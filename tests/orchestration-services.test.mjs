@@ -14,6 +14,7 @@ import {
   detectParallelWriteConflicts,
   GraphifyContextProvider,
   retrieveContextGraphForTask,
+  runContextGraphStressTest,
   summarizeContextGraphConfig
 } from "../plugins/codex/scripts/lib/orchestration/context-graph.mjs";
 import { makeTempDir } from "./helpers.mjs";
@@ -41,6 +42,12 @@ test("metrics collector estimates usage and renders execution metrics", () => {
   metrics.trackGraphContext({
     injected: true,
     mode: "fast",
+    trace: {
+      durationMs: 23,
+      confidence: "HIGH",
+      nodeCount: 18,
+      edgeCount: 24
+    },
     analytics: {
       confidence: "HIGH",
       nodeCount: 18,
@@ -69,6 +76,8 @@ test("metrics collector estimates usage and renders execution metrics", () => {
   assert.match(rendered, /Retrieved Nodes:\n- 18/);
   assert.match(rendered, /Estimated Token Savings:\n- 1380/);
   assert.match(rendered, /Retrieval Confidence:\n- HIGH/);
+  assert.match(rendered, /\[SYSTEM\] Execution Timeline/);
+  assert.match(rendered, /graph-context-retrieval/);
 });
 
 test("workflow modes normalize and reject unsupported values", () => {
@@ -178,6 +187,8 @@ test("Graphify provider can query graph json without Python graph dependencies",
   assert.ok(result.retrieval.estimatedTokenSavings >= 0);
   assert.ok(result.retrieval.usefulnessScore > 0);
   assert.ok(result.retrieval.graphHitRate > 0);
+  assert.equal(result.trace.phase, "graph-query");
+  assert.ok(result.trace.durationMs >= 0);
 });
 
 test("Graphify JS retrieval ranks file path matches into compact context", async () => {
@@ -310,9 +321,34 @@ test("context graph retrieval applies mode-aware budgets and depth", async () =>
   assert.equal(architect.budget.tokenBudget, 2200);
   assert.ok(fast.analytics.usefulnessScore > 0);
   assert.ok(architect.analytics.estimatedTokenSavings >= 0);
+  assert.equal(fast.trace.phase, "prompt-context-retrieval");
+  assert.ok(fast.trace.durationMs >= 0);
   assert.ok(architect.budget.graphBudget > fast.budget.graphBudget);
   assert.match(fast.text, /Workflow mode: FAST/);
   assert.match(architect.text, /Workflow mode: ARCHITECT/);
+});
+
+test("context graph stress test reports bounded retrieval stability", async () => {
+  const result = await runContextGraphStressTest({
+    cwd: process.cwd(),
+    config: {
+      contextGraph: {
+        enabled: true,
+        graphPath: "graphify-7/worked/httpx/graph.json"
+      }
+    },
+    queries: ["auth client", "transport retry"],
+    iterations: 4,
+    tokenBudget: 700,
+    mode: "fast"
+  });
+
+  assert.equal(result.mode, "fast");
+  assert.equal(result.iterations, 4);
+  assert.equal(result.failures, 0);
+  assert.equal(result.tokenBudgetOverruns, 0);
+  assert.equal(result.runs.length, 4);
+  assert.ok(result.p95Ms >= 0);
 });
 
 

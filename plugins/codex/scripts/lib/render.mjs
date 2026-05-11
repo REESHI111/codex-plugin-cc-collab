@@ -351,6 +351,9 @@ function appendContextGraphBlock(lines, contextGraph) {
       lines.push(`- Token Savings: ${retrieval.analytics.estimatedTokenSavings ?? 0}`);
       lines.push(`- Usefulness Score: ${retrieval.analytics.usefulnessScore ?? 0}/100`);
     }
+    if (retrieval.trace) {
+      lines.push(`- Retrieval Duration: ${Math.round(retrieval.trace.durationMs ?? 0)}ms`);
+    }
   }
   const update = contextGraph.update;
   if (update) {
@@ -360,6 +363,9 @@ function appendContextGraphBlock(lines, contextGraph) {
     }
     if (update.workerStarted) {
       lines.push(`- Background Worker: started${update.pid ? ` (${update.pid})` : ""}`);
+    }
+    if (update.trace) {
+      lines.push(`- Update Duration: ${Math.round(update.trace.durationMs ?? 0)}ms`);
     }
     if (update.lockBusy) {
       lines.push("- Pending Sync: recorded for the next graph update");
@@ -377,6 +383,9 @@ function appendContextGraphBlock(lines, contextGraph) {
   const memory = contextGraph.memory;
   if (memory?.ok && memory.filePath) {
     lines.push(`- Memory: ${memory.filePath}`);
+  }
+  if (contextGraph.trace) {
+    lines.push(`- Workflow Graph Trace: ${Math.round(contextGraph.trace.durationMs ?? 0)}ms`);
   }
 }
 
