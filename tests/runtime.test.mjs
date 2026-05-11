@@ -1787,6 +1787,41 @@ test("session end fully cleans up jobs for the ending session", async (t) => {
   assert.equal(otherJob.logFile, otherSessionLog);
 });
 
+test("session end queues context graph sync for external workspace edits", () => {
+  const repo = makeTempDir();
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+  fs.writeFileSync(
+    path.join(repo, "codex-companion.config.json"),
+    JSON.stringify({
+      contextGraph: {
+        enabled: true,
+        graphPath: "graphify-out/graph.json",
+        sessionEndBackgroundSync: true
+      }
+    }, null, 2),
+    "utf8"
+  );
+  fs.writeFileSync(path.join(repo, "src.js"), "export const value = 1;\n", "utf8");
+
+  const result = run("node", [SESSION_HOOK, "SessionEnd"], {
+    cwd: repo,
+    input: JSON.stringify({
+      hook_event_name: "SessionEnd",
+      session_id: "sess-graph",
+      cwd: repo
+    })
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const pendingPath = path.join(repo, "graphify-out", "pending-updates.json");
+  assert.equal(fs.existsSync(pendingPath), true);
+  const pending = JSON.parse(fs.readFileSync(pendingPath, "utf8"));
+  assert.deepEqual(pending.files.sort(), ["codex-companion.config.json", "src.js"].sort());
+});
+
 test("stop hook runs a stop-time review task and blocks on findings when the review gate is enabled", () => {
   const repo = makeTempDir();
   const binDir = makeTempDir();

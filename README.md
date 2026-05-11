@@ -512,7 +512,8 @@ The context graph layer is optional and disabled by default for compatibility. E
     "enabled": true,
     "provider": "graphify",
     "graphPath": "graphify-out/graph.json",
-    "updateStrategy": "workflow-end"
+    "updateStrategy": "workflow-end",
+    "syncOnSessionEnd": true
   }
 }
 ```
@@ -541,9 +542,19 @@ Current behavior:
 - `/codex:graph context` combines graph relationships with relevant prior orchestration memory
 - collaborative prompts receive task-scoped graph context when `injectIntoPrompts` is enabled
 - collaborative workflows call the graph updater after Codex-reported file changes
+- Claude Code session end detects git-visible changed files from any source and queues a background graph sync when `syncOnSessionEnd=true`
 - graph updates use a lock file and pending-update manifest to avoid concurrent write collisions
 - collaborative workflow graph updates run through a background sync worker by default
 - execution summaries are saved as markdown memory entries when `saveExecutionMemory` is enabled
+
+External edit behavior:
+
+- Edits made through `/codex:pair`, `/codex:codex-inline`, and `/codex:parallel` trigger graph sync from workflow results.
+- Edits made outside the plugin, such as Cursor, Claude direct file edits, terminal edits, or another agent, are detected at Claude Code `SessionEnd` through `git status --porcelain`.
+- Session-end sync queues changed files and starts the existing background graph worker; it does not block shutdown on a full graph rebuild.
+- Set `contextGraph.syncOnSessionEnd=false` to disable session-end detection.
+- Set `contextGraph.sessionEndBackgroundSync=false` to run the session-end update inline instead of queueing it.
+- For immediate freshness after external edits, run `/codex:graph update`.
 
 This layer is adapter-based so future graph or memory providers can replace Graphify without rewriting the orchestration workflows.
 
@@ -770,6 +781,7 @@ This collaborative runtime now includes:
 - `/codex:graph context` retrieval that combines graph relationships with prior workflow memory
 - graph update locking, pending-update recovery, stale lock handling, and parallel write-conflict diagnostics
 - non-blocking background graph sync for collaborative workflow completion
+- non-blocking session-end graph sync for git-visible external edits from Claude, Cursor, terminal tools, or other agents
 - dependency-free `graph.json` query fallback when Python Graphify dependencies are not installed
 
 ## Step 1-10 Verification Summary
@@ -801,7 +813,7 @@ Use this section to verify what was implemented across the architecture upgrade:
    Workflow summaries are saved under `graphify-out/memory/orchestration/` and retrieved with graph context for future tasks.
 
 9. **Live synchronization safety**  
-   Added graph update locking, pending-update recovery, stale lock handling, failed-update requeueing, parallel write-conflict diagnostics, and background sync workers.
+   Added graph update locking, pending-update recovery, stale lock handling, failed-update requeueing, parallel write-conflict diagnostics, workflow background sync, and session-end sync for external edits.
 
 10. **Bootstrap, config, and packaging hardening**  
     Added `/codex:graph config`, `enable`, `disable`, and `init`; documented dependency checks, first-run flow, and final feature summary; updated plugin/package descriptions for the collaborative memory runtime.

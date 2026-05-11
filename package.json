@@ -1,6 +1,6 @@
 {
   "name": "@openai/codex-plugin-cc",
-  "version": "2.1.4",
+  "version": "2.1.5",
   "private": true,
   "type": "module",
   "description": "Use Codex from Claude Code for reviews, delegation, collaborative coding, and Graphify-backed context memory.",

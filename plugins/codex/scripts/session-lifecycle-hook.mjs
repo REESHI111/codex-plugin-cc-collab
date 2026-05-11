@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 
 import fs from "node:fs";
+import path from "node:path";
 import process from "node:process";
+import { fileURLToPath } from "node:url";
 
 import { terminateProcessTree } from "./lib/process.mjs";
 import { BROKER_ENDPOINT_ENV } from "./lib/app-server.mjs";
@@ -15,9 +17,14 @@ import {
 } from "./lib/broker-lifecycle.mjs";
 import { loadState, resolveStateFile, saveState } from "./lib/state.mjs";
 import { resolveWorkspaceRoot } from "./lib/workspace.mjs";
+import { loadOrchestrationConfig } from "./lib/orchestration/config.mjs";
+import { createContextGraphProvider } from "./lib/orchestration/context-graph.mjs";
+import { runCommand } from "./lib/process.mjs";
 
 export const SESSION_ID_ENV = "CODEX_COMPANION_SESSION_ID";
 const PLUGIN_DATA_ENV = "CLAUDE_PLUGIN_DATA";
+const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
+const COMPANION_SCRIPT = path.join(SCRIPT_DIR, "codex-companion.mjs");
 
 function readHookInput() {
   const raw = fs.readFileSync(0, "utf8").trim();
@@ -73,6 +80,66 @@ function cleanupSessionJobs(cwd, sessionId) {
   });
 }
 
+function parseGitStatusPorcelain(output) {
+  const entries = String(output ?? "").split("\0").filter(Boolean);
+  const files = [];
+  for (let index = 0; index < entries.length; index += 1) {
+    const entry = entries[index];
+    const status = entry.slice(0, 2);
+    const filePath = entry.slice(3);
+    if (!filePath) {
+      continue;
+    }
+    if (status.includes("R") || status.includes("C")) {
+      const target = entries[index + 1];
+      if (target) {
+        files.push(target);
+        index += 1;
+        continue;
+      }
+    }
+    files.push(filePath);
+  }
+  return [...new Set(files)]
+    .filter((filePath) => filePath && !filePath.startsWith("graphify-out/") && filePath !== "graphify-out");
+}
+
+function detectChangedFiles(cwd) {
+  const result = runCommand("git", ["status", "--porcelain=v1", "-z", "--untracked-files=all"], {
+    cwd,
+    maxBuffer: 2 * 1024 * 1024,
+    timeout: 3000
+  });
+  if (result.error || result.status !== 0) {
+    return [];
+  }
+  return parseGitStatusPorcelain(result.stdout);
+}
+
+async function syncContextGraphOnSessionEnd(cwd) {
+  const workspaceRoot = resolveWorkspaceRoot(cwd);
+  const config = loadOrchestrationConfig(workspaceRoot);
+  if (config.contextGraph?.enabled !== true || config.contextGraph?.syncOnSessionEnd === false) {
+    return;
+  }
+  const files = detectChangedFiles(workspaceRoot);
+  if (files.length === 0) {
+    return;
+  }
+  const provider = createContextGraphProvider({ cwd: workspaceRoot, config });
+  const background = config.contextGraph?.sessionEndBackgroundSync !== false;
+  if (background) {
+    await provider.enqueueUpdate(files, {
+      reason: "session-end",
+      workerScriptPath: COMPANION_SCRIPT
+    });
+  } else {
+    await provider.updateFiles(files, {
+      reason: "session-end"
+    });
+  }
+}
+
 function handleSessionStart(input) {
   appendEnvVar(SESSION_ID_ENV, input.session_id);
   appendEnvVar(PLUGIN_DATA_ENV, process.env[PLUGIN_DATA_ENV]);
@@ -98,6 +165,8 @@ async function handleSessionEnd(input) {
   if (brokerEndpoint) {
     await sendBrokerShutdown(brokerEndpoint);
   }
+
+  await syncContextGraphOnSessionEnd(cwd);
 
   cleanupSessionJobs(cwd, input.session_id || process.env[SESSION_ID_ENV]);
   teardownBrokerSession({

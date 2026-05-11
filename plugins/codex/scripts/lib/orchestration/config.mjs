@@ -69,6 +69,8 @@ export const DEFAULT_ORCHESTRATION_CONFIG = {
     updateStrategy: "workflow-end",
     updateTimeoutMs: 120000,
     backgroundSync: true,
+    syncOnSessionEnd: true,
+    sessionEndBackgroundSync: true,
     lockUpdates: true,
     staleLockMs: 600000,
     recordPendingUpdates: true,
@@ -165,6 +167,7 @@ export function summarizeOrchestrationConfig(config) {
       provider: config.contextGraph?.provider ?? "graphify",
       graphPath: config.contextGraph?.graphPath ?? "graphify-out/graph.json",
       updateStrategy: config.contextGraph?.updateStrategy ?? "workflow-end",
+      syncOnSessionEnd: config.contextGraph?.syncOnSessionEnd !== false,
       injectIntoPrompts: config.contextGraph?.injectIntoPrompts !== false
     },
     promptStrategy: config.prompting?.strategy ?? "concise"
