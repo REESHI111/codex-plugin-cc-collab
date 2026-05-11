@@ -151,7 +151,10 @@ test("Graphify provider can query graph json without Python graph dependencies",
 
   assert.equal(result.ok, true);
   assert.match(result.text, /Graph context for: auth client/);
+  assert.match(result.text, /Retrieval confidence:/);
+  assert.match(result.text, /score:/);
   assert.match(result.text, /Auth|Client/);
+  assert.ok(result.retrieval.nodeCount <= 32);
 });
 
 test("Graphify JS retrieval ranks file path matches into compact context", async () => {
@@ -169,6 +172,27 @@ test("Graphify JS retrieval ranks file path matches into compact context", async
   assert.equal(result.ok, true);
   assert.match(result.text, /auth\.py/);
   assert.match(result.text, /client\.py|Client/);
+  assert.match(result.text, /reasons:/);
+});
+
+test("Graphify JS retrieval honors configured node and edge limits", async () => {
+  const provider = new GraphifyContextProvider({
+    cwd: process.cwd(),
+    config: {
+      contextGraph: {
+        enabled: true,
+        graphPath: "graphify-7/worked/httpx/graph.json",
+        retrievalNodeLimit: 8,
+        retrievalEdgeLimit: 10
+      }
+    }
+  });
+  const result = await provider.queryGraph("auth client retry transport", { tokenBudget: 800 });
+
+  assert.equal(result.ok, true);
+  assert.ok(result.retrieval.nodeCount <= 8);
+  assert.ok(result.retrieval.edgeCount <= 10);
+  assert.match(result.text, /Retrieved nodes:/);
 });
 
 
@@ -189,6 +213,7 @@ test("context graph retrieval is token-bounded and prompt-ready", async () => {
 
   assert.equal(context.injected, true);
   assert.match(context.text, /Graph context for:/);
+  assert.match(context.text, /Retrieval confidence:/);
 
   const prompt = buildCodexInlinePrompt({
     task: "change auth client",

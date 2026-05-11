@@ -534,7 +534,11 @@ The context graph layer is optional and disabled by default for compatibility. E
     "provider": "graphify",
     "graphPath": "graphify-out/graph.json",
     "updateStrategy": "workflow-end",
-    "syncOnSessionEnd": true
+    "syncOnSessionEnd": true,
+    "retrievalSeedLimit": 6,
+    "retrievalNodeLimit": 32,
+    "retrievalEdgeLimit": 48,
+    "showRetrievalScores": true
   }
 }
 ```
@@ -562,6 +566,7 @@ Current behavior:
 - `/codex:graph query`, `explain`, and `path` retrieve compact graph context
 - `/codex:graph context` combines graph relationships with relevant prior orchestration memory
 - collaborative prompts receive task-scoped graph context when `injectIntoPrompts` is enabled
+- graph retrieval ranks seed nodes by task relevance, applies architecture-aware boosts, expands only bounded neighborhoods, and shows node scores/reasons when `showRetrievalScores=true`
 - collaborative workflows call the graph updater after Codex-reported file changes
 - Claude Code session end detects git-visible changed files from any source and queues a background graph sync when `syncOnSessionEnd=true`
 - graph updates use a lock file and pending-update manifest to avoid concurrent write collisions
@@ -578,6 +583,14 @@ External edit behavior:
 - For immediate freshness after external edits, run `/codex:graph update`.
 
 This layer is adapter-based so future graph or memory providers can replace Graphify without rewriting the orchestration workflows.
+
+Retrieval tuning:
+
+- `retrievalSeedLimit` controls how many top-ranked graph nodes seed a task query.
+- `retrievalNodeLimit` caps selected nodes after ranking and bounded expansion.
+- `retrievalEdgeLimit` caps selected edges among chosen nodes.
+- `showRetrievalScores` exposes score and reason metadata in graph context for debugging.
+- Token budget still acts as a hard output truncation guard after retrieval ranking.
 
 ## Execution Metrics
 
@@ -798,6 +811,7 @@ This collaborative runtime now includes:
 - Graphify-backed context graph commands through `/codex:graph`
 - context graph bootstrap, config preview, enable, and disable commands
 - task-scoped graph context injection into collaborative prompts
+- relevance-ranked graph retrieval with bounded node/edge selection and visible retrieval reasons
 - execution memory saved under `graphify-out/memory/orchestration/`
 - `/codex:graph context` retrieval that combines graph relationships with prior workflow memory
 - graph update locking, pending-update recovery, stale lock handling, and parallel write-conflict diagnostics
@@ -825,7 +839,7 @@ Use this section to verify what was implemented across the architecture upgrade:
    Added a modular Graphify context provider instead of tightly coupling orchestration logic to Graphify internals.
 
 6. **Graph commands and context retrieval**  
-   Added `/codex:graph status`, `query`, `explain`, `path`, and `context` with bounded graph output.
+   Added `/codex:graph status`, `query`, `explain`, `path`, and `context` with relevance-ranked, bounded graph output.
 
 7. **Prompt-time graph context injection**  
    Collaborative prompts can now receive task-scoped graph context when `contextGraph.enabled=true`.

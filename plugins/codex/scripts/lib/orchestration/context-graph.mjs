@@ -9,6 +9,9 @@ import { runCommand } from "../process.mjs";
 const DEFAULT_GRAPHIFY_OUT = "graphify-out";
 const DEFAULT_QUERY_TOKEN_BUDGET = 2000;
 const DEFAULT_QUERY_DEPTH = 2;
+const DEFAULT_RETRIEVAL_SEED_LIMIT = 6;
+const DEFAULT_RETRIEVAL_NODE_LIMIT = 32;
+const DEFAULT_RETRIEVAL_EDGE_LIMIT = 48;
 const DEFAULT_MEMORY_TOKEN_BUDGET = 1000;
 const DEFAULT_MEMORY_LIMIT = 3;
 const DEFAULT_LOCK_STALE_MS = 10 * 60 * 1000;
@@ -35,6 +38,10 @@ export function buildRecommendedContextGraphConfig(overrides = {}) {
     recordPendingUpdates: true,
     queryTokenBudget: DEFAULT_QUERY_TOKEN_BUDGET,
     queryDepth: DEFAULT_QUERY_DEPTH,
+    retrievalSeedLimit: DEFAULT_RETRIEVAL_SEED_LIMIT,
+    retrievalNodeLimit: DEFAULT_RETRIEVAL_NODE_LIMIT,
+    retrievalEdgeLimit: DEFAULT_RETRIEVAL_EDGE_LIMIT,
+    showRetrievalScores: true,
     injectIntoPrompts: true,
     promptTokenBudget: DEFAULT_QUERY_TOKEN_BUDGET,
     promptQueryDepth: DEFAULT_QUERY_DEPTH,
@@ -395,6 +402,33 @@ function nodeDegree(edges, nodeId) {
   return edges.reduce((count, edge) => count + (edge.source === nodeId || edge.target === nodeId ? 1 : 0), 0);
 }
 
+function architectureBoost(node, terms) {
+  const label = String(node.label ?? "").toLowerCase();
+  const sourceFile = String(node.source_file ?? "").toLowerCase();
+  const typeText = [
+    node.node_type,
+    node.file_type,
+    node.kind,
+    node.type
+  ].filter(Boolean).join(" ").toLowerCase();
+  const architectureWords = ["service", "client", "router", "provider", "controller", "store", "model", "schema", "config", "middleware", "adapter", "executor", "workflow", "manager"];
+  let score = 0;
+  for (const word of architectureWords) {
+    if (label.includes(word) || sourceFile.includes(word) || typeText.includes(word)) {
+      score += 2;
+    }
+  }
+  for (const term of terms) {
+    if (sourceFile.includes(`/${term}`) || sourceFile.includes(`${term}.`)) {
+      score += 3;
+    }
+  }
+  if (sourceFile.includes("test") || sourceFile.includes("fixture") || sourceFile.includes("example")) {
+    score -= 3;
+  }
+  return score;
+}
+
 function adjacency(edges) {
   const map = new Map();
   for (const edge of edges) {
@@ -437,6 +471,7 @@ function scoreGraphNode(node, terms, phrases, graph) {
   if (node.source_file) {
     score += 1;
   }
+  score += architectureBoost(node, terms);
   score += Math.min(8, nodeDegree(graph.edges, node.id));
   return score;
 }
@@ -476,6 +511,104 @@ function rankGraphEdges(graph, selectedNodeIds, terms) {
     })
     .sort((left, right) => right.score - left.score)
     .map((entry) => entry.edge);
+}
+
+function resolveRetrievalLimits(request = {}) {
+  const tokenBudget = Math.max(200, Number(request.tokenBudget ?? DEFAULT_QUERY_TOKEN_BUDGET) || DEFAULT_QUERY_TOKEN_BUDGET);
+  return {
+    tokenBudget,
+    depth: Math.max(1, Number(request.depth ?? DEFAULT_QUERY_DEPTH) || DEFAULT_QUERY_DEPTH),
+    seedLimit: Math.max(1, Number(request.seedLimit ?? DEFAULT_RETRIEVAL_SEED_LIMIT) || DEFAULT_RETRIEVAL_SEED_LIMIT),
+    nodeLimit: Math.max(6, Math.min(
+      Number(request.nodeLimit ?? DEFAULT_RETRIEVAL_NODE_LIMIT) || DEFAULT_RETRIEVAL_NODE_LIMIT,
+      Math.max(8, Math.floor(tokenBudget / 45))
+    )),
+    edgeLimit: Math.max(8, Math.min(
+      Number(request.edgeLimit ?? DEFAULT_RETRIEVAL_EDGE_LIMIT) || DEFAULT_RETRIEVAL_EDGE_LIMIT,
+      Math.max(12, Math.floor(tokenBudget / 35))
+    )),
+    showScores: request.showScores !== false
+  };
+}
+
+function buildRetrievalPlan(graph, query, request = {}) {
+  const terms = queryTerms(query);
+  const phrases = queryPhrases(query);
+  const limits = resolveRetrievalLimits(request);
+  const seedEntries = rankGraphNodes(graph, query).slice(0, limits.seedLimit);
+  const adj = adjacency(graph.edges);
+  const candidates = new Map();
+
+  for (const seed of seedEntries) {
+    candidates.set(seed.node.id, {
+      node: seed.node,
+      score: seed.score + 12,
+      reasons: ["seed-match"],
+      distance: 0
+    });
+    const queue = [{ id: seed.node.id, distance: 0, inheritedScore: seed.score }];
+    const seen = new Set([seed.node.id]);
+    while (queue.length) {
+      const current = queue.shift();
+      if (current.distance >= limits.depth) {
+        continue;
+      }
+      for (const next of adj.get(current.id) ?? []) {
+        if (seen.has(next.node)) {
+          continue;
+        }
+        seen.add(next.node);
+        const node = graph.nodeMap.get(next.node);
+        if (!node) {
+          continue;
+        }
+        const direct = scoreGraphNode(node, terms, phrases, graph);
+        const relation = String(next.edge.relation ?? "").toLowerCase();
+        let relationScore = 0;
+        for (const term of terms) {
+          if (relation.includes(term)) relationScore += 4;
+        }
+        const distance = current.distance + 1;
+        const score = direct + relationScore + Math.max(1, Math.floor(current.inheritedScore / (distance + 2))) + Math.max(0, 4 - distance);
+        const existing = candidates.get(node.id);
+        const reasons = [
+          direct > 0 ? "term-match" : "related-node",
+          relationScore > 0 ? "relation-match" : "",
+          `distance:${distance}`
+        ].filter(Boolean);
+        if (!existing || score > existing.score) {
+          candidates.set(node.id, { node, score, reasons, distance });
+        }
+        queue.push({ id: node.id, distance, inheritedScore: Math.max(direct, score) });
+      }
+    }
+  }
+
+  const selected = [...candidates.values()]
+    .filter((entry) => entry.score > 0)
+    .sort((left, right) => right.score - left.score || left.distance - right.distance || left.node.label.localeCompare(right.node.label))
+    .slice(0, limits.nodeLimit);
+  const selectedIds = selected.map((entry) => entry.node.id);
+  const selectedSet = new Set(selectedIds);
+  const edges = rankGraphEdges(graph, selectedIds, terms)
+    .filter((edge) => selectedSet.has(edge.source) && selectedSet.has(edge.target))
+    .slice(0, limits.edgeLimit);
+  const confidence = selected.length >= 8 && seedEntries[0]?.score >= 20
+    ? "HIGH"
+    : selected.length >= 3
+      ? "MEDIUM"
+      : "LOW";
+
+  return {
+    terms,
+    limits,
+    seeds: seedEntries,
+    nodes: selected,
+    edges,
+    confidence,
+    graphNodeCount: graph.nodes.length,
+    graphEdgeCount: graph.edges.length
+  };
 }
 
 function truncateText(text, tokenBudget) {
@@ -615,41 +748,26 @@ function runJsGraphQuery(graphPath, request) {
     return { ok: false, error: "No graph path found." };
   }
 
-  const terms = queryTerms(request.query);
-  const seeds = rankGraphNodes(graph, request.query)
-    .slice(0, 3)
-    .map((entry) => entry.node);
-  if (seeds.length === 0) {
+  const plan = buildRetrievalPlan(graph, request.query, request);
+  if (plan.seeds.length === 0 || plan.nodes.length === 0) {
     return { ok: false, error: "No matching graph region found." };
   }
-  const adj = adjacency(graph.edges);
-  const depth = Math.max(1, Number(request.depth ?? DEFAULT_QUERY_DEPTH) || DEFAULT_QUERY_DEPTH);
-  const seen = new Set(seeds.map((node) => node.id));
-  let frontier = seeds.map((node) => ({ id: node.id, depth: 0 }));
-  while (frontier.length) {
-    const current = frontier.shift();
-    if (current.depth >= depth) {
-      continue;
-    }
-    for (const next of adj.get(current.id) ?? []) {
-      if (!seen.has(next.node)) {
-        seen.add(next.node);
-        frontier.push({ id: next.node, depth: current.depth + 1 });
-      }
-    }
-  }
-  const rankedEdges = rankGraphEdges(graph, seen, terms);
   const lines = [
     `Graph context for: ${request.query}`,
+    `Retrieval confidence: ${plan.confidence}`,
+    `Retrieved nodes: ${plan.nodes.length}/${plan.graphNodeCount}`,
+    `Retrieved edges: ${plan.edges.length}/${plan.graphEdgeCount}`,
     "",
     "Nodes:",
-    ...[...seen].slice(0, 80).map((id) => {
-      const node = graph.nodeMap.get(id);
-      return `- ${node?.label ?? id} [${id}]${node?.source_file ? ` (${node.source_file})` : ""}`;
+    ...plan.nodes.map((entry) => {
+      const node = entry.node;
+      const score = plan.limits.showScores ? ` score:${Math.round(entry.score)}` : "";
+      const reasons = plan.limits.showScores ? ` reasons:${entry.reasons.join(",")}` : "";
+      return `- ${node.label ?? node.id} [${node.id}]${score}${reasons}${node.source_file ? ` (${node.source_file})` : ""}`;
     }),
     "",
     "Edges:",
-    ...rankedEdges.slice(0, 120).map((edge) => {
+    ...plan.edges.map((edge) => {
       const source = graph.nodeMap.get(edge.source);
       const target = graph.nodeMap.get(edge.target);
       return `- ${source?.label ?? edge.source} --${edge.relation}--> ${target?.label ?? edge.target}`;
@@ -658,6 +776,16 @@ function runJsGraphQuery(graphPath, request) {
   return {
     ok: true,
     action: "query",
+    retrieval: {
+      confidence: plan.confidence,
+      nodeCount: plan.nodes.length,
+      edgeCount: plan.edges.length,
+      graphNodeCount: plan.graphNodeCount,
+      graphEdgeCount: plan.graphEdgeCount,
+      seedCount: plan.seeds.length,
+      tokenBudget: plan.limits.tokenBudget,
+      depth: plan.limits.depth
+    },
     text: truncateText(lines.join("\n"), request.tokenBudget)
   };
 }
@@ -1159,7 +1287,11 @@ export class GraphifyContextProvider extends ContextGraphProvider {
       action: "query",
       query,
       tokenBudget: options.tokenBudget ?? this.config.contextGraph?.queryTokenBudget ?? DEFAULT_QUERY_TOKEN_BUDGET,
-      depth: options.depth ?? this.config.contextGraph?.queryDepth ?? DEFAULT_QUERY_DEPTH
+      depth: options.depth ?? this.config.contextGraph?.queryDepth ?? DEFAULT_QUERY_DEPTH,
+      seedLimit: options.seedLimit ?? this.config.contextGraph?.retrievalSeedLimit ?? DEFAULT_RETRIEVAL_SEED_LIMIT,
+      nodeLimit: options.nodeLimit ?? this.config.contextGraph?.retrievalNodeLimit ?? DEFAULT_RETRIEVAL_NODE_LIMIT,
+      edgeLimit: options.edgeLimit ?? this.config.contextGraph?.retrievalEdgeLimit ?? DEFAULT_RETRIEVAL_EDGE_LIMIT,
+      showScores: options.showScores ?? this.config.contextGraph?.showRetrievalScores
     });
   }
 
