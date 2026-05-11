@@ -138,6 +138,7 @@ test("collaborative commands expose pair, inline, debate, and parallel workflows
   assert.match(graph, /`enable`: persist the recommended context graph config/i);
   assert.match(graph, /`disable`: disable context graph prompt injection/i);
   assert.match(graph, /`init`: validate Graphify dependencies/i);
+  assert.match(graph, /`recover`: repair local graph workspace state/i);
   assert.match(graph, /query <text>/);
   assert.match(graph, /path <source> <target>/);
   assert.match(graph, /stress \[query\]/);

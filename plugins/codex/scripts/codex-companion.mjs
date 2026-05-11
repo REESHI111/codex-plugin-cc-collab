@@ -99,7 +99,7 @@ function printUsage() {
       "  node scripts/codex-companion.mjs pair [--read-only|--full-power] [--claude-plan-file <file>] [--model <model|spark>] [prompt]",
       "  node scripts/codex-companion.mjs debate [--claude-proposal-file <file>] [--model <model|spark>] [prompt]",
       "  node scripts/codex-companion.mjs parallel [--read-only|--full-power] [--agents codex,codex-fast] [prompt]",
-      "  node scripts/codex-companion.mjs graph <status|config|enable|disable|init|update|query|explain|path|context|stress> [args]",
+      "  node scripts/codex-companion.mjs graph <status|config|enable|disable|init|recover|update|query|explain|path|context|stress> [args]",
       "  node scripts/codex-companion.mjs ccv [--json]",
       "  node scripts/codex-companion.mjs upgrade [--json]",
       "  node scripts/codex-companion.mjs mode [fast|architect|balanced] [--json]",
@@ -701,6 +701,17 @@ function renderGraphPayload(payload) {
       lines.push(`- graphifyy package: ${status.health.runtime?.checks?.graphify?.version ?? "bundled/source"}`);
       lines.push(`- graphify CLI: ${status.health.pythonModuleCli?.ok ? "ok" : status.health.pythonModuleCli?.error ?? status.health.pythonModuleCli?.output ?? "missing"}`);
     }
+    if (status.workspace) {
+      lines.push("", "Workspace Health:");
+      lines.push(`- Output Dir: ${status.workspace.outputDirExists ? "ok" : "missing"}`);
+      lines.push(`- graph.json: ${status.workspace.graph.exists ? status.workspace.graph.valid ? "valid" : "invalid" : "missing"}`);
+      if (status.workspace.graph.error) {
+        lines.push(`- graph.json Error: ${status.workspace.graph.error}`);
+      }
+      lines.push(`- Memory Layer: ${status.workspace.memoryExists ? "initialized" : "missing"}`);
+      lines.push(`- Pending Updates: ${status.workspace.pendingFileCount}`);
+      lines.push(`- Lock Status: ${status.lockStatus ?? "unknown"}`);
+    }
     lines.push(`- Detail: ${status.detail}`);
     if (!status.enabled) {
       lines.push("", "Next steps:");
@@ -710,6 +721,15 @@ function renderGraphPayload(payload) {
       lines.push("", "Next steps:");
       lines.push("- Run `/codex:graph init --install` to bootstrap Graphify dependencies automatically.");
       lines.push("- Or install manually with `python3 -m pip install graphifyy`, then run `/codex:graph init --force`.");
+      for (const step of status.healthSummary?.installPlan ?? []) {
+        lines.push(`- ${step}`);
+      }
+    } else if (status.workspace && (!status.workspace.healthy || !status.graphValid)) {
+      lines.push("", "Next steps:");
+      lines.push("- Run `/codex:graph recover` to repair local graph workspace state.");
+      if (!status.graphValid) {
+        lines.push("- Run `/codex:graph init --force` to rebuild graph.json.");
+      }
     }
     return `${lines.join("\n").trimEnd()}\n`;
   }
@@ -744,6 +764,10 @@ function renderGraphPayload(payload) {
       lines.push(`- Install: ${result.install.ok ? "ok" : "failed"}`);
       lines.push(`- Install Detail: ${result.install.detail}`);
     }
+    if (result.recovery) {
+      lines.push(`- Recovery: ${result.recovery.ok ? "ok" : "needs rebuild"}`);
+      lines.push(`- Recovery Detail: ${result.recovery.detail}`);
+    }
     if (result.runtime?.checks) {
       for (const [name, check] of Object.entries(result.runtime.checks)) {
         lines.push(`- ${name}: ${check.ok ? `ok${check.version ? ` (${check.version})` : ""}` : check.error ?? "missing"}`);
@@ -755,6 +779,31 @@ function renderGraphPayload(payload) {
     }
     lines.push(`- Graph: ${result.after?.graphExists ? result.after.graphPath : "not built"}`);
     lines.push(`- Config Enabled: ${result.configEnabled ? "yes" : "no"}`);
+    if (result.nextSteps?.length) {
+      lines.push("", "Next steps:");
+      for (const step of result.nextSteps) {
+        lines.push(`- ${step}`);
+      }
+    }
+    return `${lines.join("\n").trimEnd()}\n`;
+  }
+
+  if (payload.command === "recover") {
+    const result = payload.result;
+    lines.push(result.ok ? "Context graph recovery completed." : "Context graph recovery needs attention.");
+    lines.push("");
+    lines.push(`- Detail: ${result.detail}`);
+    if (result.actions?.length) {
+      lines.push("", "Actions:");
+      for (const action of result.actions) {
+        lines.push(`- ${action}`);
+      }
+    }
+    lines.push("", "Workspace:");
+    lines.push(`- Output Dir: ${result.after?.outputDirExists ? "ok" : "missing"}`);
+    lines.push(`- graph.json: ${result.after?.graph?.exists ? result.after.graph.valid ? "valid" : "invalid" : "missing"}`);
+    lines.push(`- Memory Layer: ${result.after?.memoryExists ? "initialized" : "missing"}`);
+    lines.push(`- Lock: ${result.after?.lockExists ? result.after.lockStale ? "stale" : "active" : "clear"}`);
     if (result.nextSteps?.length) {
       lines.push("", "Next steps:");
       for (const step of result.nextSteps) {
@@ -1348,7 +1397,7 @@ async function handleGraph(argv) {
   const config = loadOrchestrationConfig(workspaceRoot);
   const command = positionals[0] ?? "status";
   const rest = positionals.slice(1);
-  const provider = command === "init" || command === "bootstrap"
+  const provider = command === "init" || command === "bootstrap" || command === "recover"
     ? new GraphifyContextProvider({
         cwd: workspaceRoot,
         config: {
@@ -1414,6 +1463,13 @@ async function handleGraph(argv) {
         force: Boolean(options.force),
         install: Boolean(options.install),
         configEnabled: config.contextGraph?.enabled === true
+      })
+    };
+  } else if (command === "recover") {
+    payload = {
+      command,
+      result: provider.recoverWorkspace({
+        clearLock: Boolean(options.force)
       })
     };
   } else if (command === "update") {
@@ -1490,7 +1546,7 @@ async function handleGraph(argv) {
       })
     };
   } else {
-    throw new Error(`Unknown graph command "${command}". Use status, config, enable, disable, init, update, query, explain, path, context, or stress.`);
+    throw new Error(`Unknown graph command "${command}". Use status, config, enable, disable, init, recover, update, query, explain, path, context, or stress.`);
   }
 
   outputCommandResult(payload, renderGraphPayload(payload), options.json);

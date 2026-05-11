@@ -162,6 +162,29 @@ test("Graphify provider resolves workspace graph paths", async () => {
   assert.equal(status.memoryDir, `${cwd}/graphify-out/memory/orchestration`);
   assert.equal(status.promptInjection, true);
   assert.equal(status.memoryRetrieval, true);
+  assert.equal(status.workspace.outputDirExists, false);
+  assert.equal(status.lockStatus, "clear");
+});
+
+test("Graphify provider status survives invalid graph json", async () => {
+  const cwd = makeTempDir();
+  fs.mkdirSync(path.join(cwd, "graphify-out"), { recursive: true });
+  fs.writeFileSync(path.join(cwd, "graphify-out", "graph.json"), "{bad json", "utf8");
+  const provider = new GraphifyContextProvider({
+    cwd,
+    config: {
+      contextGraph: {
+        enabled: true,
+        graphPath: "graphify-out/graph.json"
+      }
+    }
+  });
+
+  const status = await provider.getStatus();
+
+  assert.equal(status.graphExists, true);
+  assert.equal(status.graphValid, false);
+  assert.match(status.graphError, /JSON|Unexpected|Expected/i);
 });
 
 test("Graphify provider can query graph json without Python graph dependencies", async () => {
@@ -444,6 +467,31 @@ test("Graphify provider records pending updates when graph lock is busy", async 
   assert.deepEqual(pending.files, ["src/app.ts"]);
 });
 
+test("Graphify provider recovers workspace directories and stale locks", () => {
+  const cwd = makeTempDir();
+  fs.mkdirSync(path.join(cwd, "graphify-out"), { recursive: true });
+  const lockPath = path.join(cwd, "graphify-out", ".codex-graph-update.lock");
+  fs.writeFileSync(lockPath, JSON.stringify({ createdAt: "old" }), "utf8");
+  const old = new Date(Date.now() - 20 * 60 * 1000);
+  fs.utimesSync(lockPath, old, old);
+  const provider = new GraphifyContextProvider({
+    cwd,
+    config: {
+      contextGraph: {
+        enabled: true,
+        graphPath: "graphify-out/graph.json",
+        staleLockMs: 1000
+      }
+    }
+  });
+
+  const result = provider.recoverWorkspace();
+
+  assert.equal(result.after.memoryExists, true);
+  assert.equal(result.after.lockExists, false);
+  assert.match(result.actions.join("\n"), /cleared stale graph update lock/);
+});
+
 test("Graphify provider can enqueue background updates without running Graphify inline", async () => {
   const cwd = makeTempDir();
   fs.mkdirSync(path.join(cwd, "graphify-out"), { recursive: true });
@@ -542,6 +590,7 @@ test("Graphify bootstrap creates storage and reports graphifyy install command w
   assert.equal(result.ok, false);
   assert.equal(fs.existsSync(path.join(cwd, "graphify-out")), true);
   assert.equal(fs.existsSync(path.join(cwd, "graphify-out", "memory", "orchestration")), true);
+  assert.equal(result.recovery.ok, true);
   assert.match(result.runtime.installCommand, /graphifyy/);
   assert.match(result.nextSteps.join("\n"), /graphifyy/);
 });

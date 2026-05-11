@@ -595,6 +595,7 @@ Current behavior:
 - `/codex:graph enable` persists the recommended config through the plugin state config
 - `/codex:graph disable` turns off prompt injection and memory retrieval without deleting graph files
 - `/codex:graph init` validates Graphify dependencies and builds the first graph
+- `/codex:graph recover` repairs local graph workspace state, initializes memory directories, and clears stale locks
 - `/codex:graph update` refreshes the current workspace graph
 - `/codex:graph query`, `explain`, and `path` retrieve compact graph context
 - `/codex:graph context` combines graph relationships with relevant prior orchestration memory
@@ -605,6 +606,7 @@ Current behavior:
 - collaborative workflows call the graph updater after Codex-reported file changes
 - Claude Code session end detects git-visible changed files from any source and queues a background graph sync when `syncOnSessionEnd=true`
 - graph updates use a lock file and pending-update manifest to avoid concurrent write collisions
+- graph status validates graph.json integrity, pending updates, memory directory state, and lock health
 - collaborative workflow graph updates run through a background sync worker by default
 - execution summaries are saved as markdown memory entries when `saveExecutionMemory` is enabled
 
@@ -714,6 +716,14 @@ Graph stress diagnostics:
 ```
 
 The stress diagnostic repeatedly exercises bounded retrieval and reports average latency, p95 latency, failures, token budget overruns, max retrieved nodes, and max estimated context tokens. Use it after large refactors, graph rebuilds, or provider changes to catch retrieval drift, token spikes, or slowdowns.
+
+Graph recovery diagnostics:
+
+```bash
+/codex:graph recover
+```
+
+Recovery is intentionally local and conservative. It creates missing `graphify-out/` and `graphify-out/memory/orchestration/` directories, clears stale update locks, reports corrupt `graph.json` files without deleting them, and tells you when a forced rebuild is required.
 
 ## Loop Protection
 
@@ -895,6 +905,7 @@ This collaborative runtime now includes:
 - graph context effectiveness analytics in execution metrics
 - graph observability traces for context retrieval, prompt injection, and graph sync timing
 - `/codex:graph stress` diagnostics for large-repo retrieval stability checks
+- `/codex:graph recover` diagnostics for stale locks, missing memory folders, and invalid graph workspace state
 - execution memory saved under `graphify-out/memory/orchestration/`
 - `/codex:graph context` retrieval that combines graph relationships with prior workflow memory
 - graph update locking, pending-update recovery, stale lock handling, and parallel write-conflict diagnostics
@@ -934,4 +945,4 @@ Use this section to verify what was implemented across the architecture upgrade:
    Added graph update locking, pending-update recovery, stale lock handling, failed-update requeueing, parallel write-conflict diagnostics, workflow background sync, session-end sync for external edits, and graph sync timing traces.
 
 10. **Bootstrap, config, and packaging hardening**  
-    Added `/codex:graph config`, `enable`, `disable`, `init`, and `stress`; documented dependency checks, first-run flow, stress diagnostics, and final feature summary; updated plugin/package descriptions for the collaborative memory runtime.
+    Added `/codex:graph config`, `enable`, `disable`, `init`, `recover`, and `stress`; documented dependency checks, first-run flow, recovery diagnostics, stress diagnostics, and final feature summary; updated plugin/package descriptions for the collaborative memory runtime.

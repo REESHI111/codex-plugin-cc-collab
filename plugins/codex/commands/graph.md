@@ -1,6 +1,6 @@
 ---
 description: Query and inspect the orchestration context graph
-argument-hint: 'status|config|enable|disable|init [--install]|update|query|explain|path|context|stress [args]'
+argument-hint: 'status|config|enable|disable|init [--install]|recover|update|query|explain|path|context|stress [args]'
 disable-model-invocation: true
 allowed-tools: Bash(node:*)
 ---
@@ -17,6 +17,7 @@ Supported commands:
 - `disable`: disable context graph prompt injection and memory retrieval without deleting graph files
 - `init`: validate Graphify dependencies and build the first context graph
 - `init --install`: explicitly allow the runtime to install missing Graphify Python dependencies with pip before building
+- `recover`: repair local graph workspace state, initialize memory directories, and clear stale locks
 - `update`: refresh the graph from the current workspace
 - `query <text>`: retrieve a compact graph region for an architecture question
 - `explain <node>`: inspect a matching graph node and its neighbors

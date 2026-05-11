@@ -218,6 +218,38 @@ function graphifyHealthDetail(health = {}) {
   return "Graphify engine unavailable.";
 }
 
+function graphifyHealthSummary(health = {}) {
+  const runtimeChecks = health.runtime?.checks ?? {};
+  const missingModules = Object.entries(runtimeChecks)
+    .filter(([, check]) => !check.ok)
+    .map(([name]) => name);
+  const brokenTools = [
+    !health.python?.ok ? "python" : "",
+    !health.pip?.ok ? "pip" : "",
+    !health.pythonModuleCli?.ok ? "python-module-cli" : ""
+  ].filter(Boolean);
+  const installPlan = [];
+  if (!health.python?.ok) {
+    installPlan.push("Install Python 3.10+ and rerun `/codex:graph init`.");
+  }
+  if (health.python?.ok && !health.pip?.ok) {
+    installPlan.push("Enable pip for the selected Python runtime.");
+  }
+  if (missingModules.length) {
+    installPlan.push(`Install missing Graphify modules with \`${GRAPHIFY_INSTALL_COMMAND}\`.`);
+    installPlan.push(`If the full package is unavailable, run \`${GRAPHIFY_MINIMAL_INSTALL_COMMAND}\`.`);
+  }
+  if (health.python?.ok && !health.uv?.ok) {
+    installPlan.push("Optional: install `uv` for faster isolated Python tooling.");
+  }
+  return {
+    ok: Boolean(health.runtime?.ok && health.pythonModuleCli?.ok),
+    missingModules,
+    brokenTools,
+    installPlan
+  };
+}
+
 function isEnabled(config = {}) {
   return config.contextGraph?.enabled === true;
 }
@@ -260,6 +292,41 @@ function writeJsonAtomic(filePath, value) {
   const tmpPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
   fs.writeFileSync(tmpPath, JSON.stringify(value, null, 2), "utf8");
   fs.renameSync(tmpPath, filePath);
+}
+
+function inspectGraphJson(graphPath) {
+  if (!fs.existsSync(graphPath)) {
+    return {
+      exists: false,
+      readable: false,
+      valid: false,
+      nodeCount: 0,
+      edgeCount: 0,
+      error: null
+    };
+  }
+  try {
+    const data = readJsonIfExists(graphPath);
+    const nodes = Array.isArray(data?.nodes) ? data.nodes.length : 0;
+    const edges = Array.isArray(data?.links) ? data.links.length : Array.isArray(data?.edges) ? data.edges.length : 0;
+    return {
+      exists: true,
+      readable: true,
+      valid: Array.isArray(data?.nodes) && (Array.isArray(data?.links) || Array.isArray(data?.edges)),
+      nodeCount: nodes,
+      edgeCount: edges,
+      error: null
+    };
+  } catch (error) {
+    return {
+      exists: true,
+      readable: false,
+      valid: false,
+      nodeCount: 0,
+      edgeCount: 0,
+      error: error instanceof Error ? error.message : String(error)
+    };
+  }
 }
 
 function buildPythonPathBootstrap(pythonPaths = []) {
@@ -1203,6 +1270,14 @@ export class ContextGraphProvider {
       detail: "No context graph provider configured."
     };
   }
+
+  recoverWorkspace() {
+    return {
+      ok: false,
+      skipped: true,
+      detail: "No context graph provider configured."
+    };
+  }
 }
 
 export class GraphifyContextProvider extends ContextGraphProvider {
@@ -1258,6 +1333,59 @@ export class GraphifyContextProvider extends ContextGraphProvider {
     fs.mkdirSync(this.memoryDir, { recursive: true });
   }
 
+  inspectWorkspace() {
+    const graph = inspectGraphJson(this.graphPath);
+    const pending = readJsonSafe(this.pendingUpdatesPath, { files: [], events: [] });
+    const lockExists = fs.existsSync(this.lockPath);
+    const lockAgeMs = lockExists ? Date.now() - fs.statSync(this.lockPath).mtimeMs : 0;
+    const staleLockMs = Number(this.config.contextGraph?.staleLockMs ?? DEFAULT_LOCK_STALE_MS) || DEFAULT_LOCK_STALE_MS;
+    const memoryExists = fs.existsSync(this.memoryDir);
+    return {
+      outDir: this.outDir,
+      outputDirExists: fs.existsSync(this.outDir),
+      graphPath: this.graphPath,
+      graph,
+      reportPath: this.reportPath,
+      reportExists: fs.existsSync(this.reportPath),
+      memoryDir: this.memoryDir,
+      memoryExists,
+      pendingUpdatesPath: this.pendingUpdatesPath,
+      pendingFileCount: unique(pending.files ?? []).length,
+      pendingEventCount: Array.isArray(pending.events) ? pending.events.length : 0,
+      lockPath: this.lockPath,
+      lockExists,
+      lockAgeMs,
+      lockStale: lockExists && lockAgeMs > staleLockMs,
+      healthy: graph.valid && memoryExists && (!lockExists || lockAgeMs <= staleLockMs)
+    };
+  }
+
+  recoverWorkspace(options = {}) {
+    const before = this.inspectWorkspace();
+    this.ensureStorage();
+    const actions = ["ensured graph output and memory directories"];
+    if (before.lockStale || options.clearLock === true) {
+      fs.rmSync(this.lockPath, { force: true });
+      actions.push("cleared stale graph update lock");
+    }
+    if (before.graph.exists && !before.graph.valid) {
+      actions.push("detected invalid graph.json; rebuild required");
+    }
+    const after = this.inspectWorkspace();
+    return {
+      ok: after.memoryExists && (!after.lockExists || !after.lockStale),
+      actions,
+      before,
+      after,
+      nextSteps: after.graph.valid
+        ? ["Run `/codex:graph status` to verify provider health."]
+        : ["Run `/codex:graph init --force` to rebuild graph.json."],
+      detail: after.graph.valid
+        ? "Graph workspace recovery completed."
+        : "Graph workspace recovery completed; graph rebuild is still required."
+    };
+  }
+
   async getStatus() {
     const memoryDir = this.memoryDir;
     const memoryCount = fs.existsSync(memoryDir)
@@ -1267,9 +1395,10 @@ export class GraphifyContextProvider extends ContextGraphProvider {
     const reportExists = fs.existsSync(this.reportPath);
     const health = await this.checkHealth();
     const available = Boolean(health.runtime.ok && health.pythonModuleCli.ok);
-    const data = graphExists ? readJsonIfExists(this.graphPath) : null;
-    const nodes = Array.isArray(data?.nodes) ? data.nodes.length : 0;
-    const links = Array.isArray(data?.links) ? data.links.length : Array.isArray(data?.edges) ? data.edges.length : 0;
+    const workspace = this.inspectWorkspace();
+    const healthSummary = graphifyHealthSummary(health);
+    const nodes = workspace.graph.nodeCount;
+    const links = workspace.graph.edgeCount;
     const stat = graphExists ? fs.statSync(this.graphPath) : null;
 
     return {
@@ -1289,7 +1418,17 @@ export class GraphifyContextProvider extends ContextGraphProvider {
       lastUpdated: stat?.mtime?.toISOString() ?? null,
       updateStrategy: this.config.contextGraph?.updateStrategy ?? "workflow-end",
       health,
-      detail: available ? "Graphify engine available." : graphifyHealthDetail(health)
+      healthSummary,
+      workspace,
+      lockStatus: workspace.lockExists ? workspace.lockStale ? "stale" : "active" : "clear",
+      pendingUpdates: workspace.pendingFileCount,
+      graphValid: workspace.graph.valid,
+      graphError: workspace.graph.error,
+      detail: available
+        ? workspace.graph.valid || !workspace.graph.exists
+          ? "Graphify engine available."
+          : `Graphify engine available, but graph.json is invalid: ${workspace.graph.error ?? "invalid graph structure"}`
+        : graphifyHealthDetail(health)
     };
   }
 
@@ -1393,6 +1532,7 @@ export class GraphifyContextProvider extends ContextGraphProvider {
 
   async bootstrap(options = {}) {
     this.ensureStorage();
+    const recovery = this.recoverWorkspace();
     let before = await this.getStatus();
     let runtime = before.health?.runtime ?? await this.checkRuntime();
     let install = null;
@@ -1415,6 +1555,7 @@ export class GraphifyContextProvider extends ContextGraphProvider {
           partial: true,
           runtime,
           install,
+          recovery,
           before,
           build: {
             ok: true,
@@ -1436,6 +1577,7 @@ export class GraphifyContextProvider extends ContextGraphProvider {
         ok: false,
         runtime,
         install,
+        recovery,
         before,
         build: {
           ok: false,
@@ -1480,6 +1622,7 @@ export class GraphifyContextProvider extends ContextGraphProvider {
       ok,
       runtime,
       install,
+      recovery,
       before,
       build,
       after,
