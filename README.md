@@ -47,6 +47,14 @@ Reload plugins:
 /reload-plugins
 ```
 
+If Claude Code keeps loading an older cached version after reinstalling, run:
+
+```bash
+/codex:upgrade
+/reload-plugins
+/codex:ccv
+```
+
 Then run:
 
 ```bash
@@ -315,6 +323,19 @@ Examples:
 ```
 
 Use this after `/reload-plugins` to confirm Claude Code is running the expected plugin version and bundle.
+
+### `/codex:upgrade`
+
+Repairs the local Claude Code plugin installation when `/reload-plugins` keeps loading an older cache. It fetches the `codex-collab` marketplace clone, fast-forwards it, copies the latest `codex` plugin source into Claude's versioned cache, and updates `installed_plugins.json`.
+
+Examples:
+
+```bash
+/codex:upgrade
+/codex:upgrade --json
+```
+
+Use this when `/codex:ccv` shows an older plugin version than the GitHub marketplace version. Run `/reload-plugins` after it completes.
 
 ### `/codex:mode`
 

@@ -86,7 +86,8 @@ test("continue is not exposed as a user-facing command", () => {
     "result.md",
     "review.md",
     "setup.md",
-    "status.md"
+    "status.md",
+    "upgrade.md"
   ]);
 });
 
@@ -98,6 +99,7 @@ test("collaborative commands expose pair, inline, debate, and parallel workflows
   const graph = read("commands/graph.md");
   const ccv = read("commands/ccv.md");
   const mode = read("commands/mode.md");
+  const upgrade = read("commands/upgrade.md");
   const readme = fs.readFileSync(path.join(ROOT, "README.md"), "utf8");
 
   assert.match(pair, /Claude analyzes the task architecturally/i);
@@ -129,6 +131,8 @@ test("collaborative commands expose pair, inline, debate, and parallel workflows
   assert.match(ccv, /codex-companion\.mjs" ccv "\$ARGUMENTS"/);
   assert.match(ccv, /plugin version/i);
   assert.match(ccv, /Graphify/i);
+  assert.match(upgrade, /codex-companion\.mjs" upgrade "\$ARGUMENTS"/);
+  assert.match(upgrade, /reloads an older cache/i);
   assert.match(graph, /context graph/i);
   assert.match(graph, /`config`: preview the recommended context graph config block/i);
   assert.match(graph, /`enable`: persist the recommended context graph config/i);

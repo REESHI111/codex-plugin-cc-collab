@@ -37,7 +37,7 @@ import {
   runParallelWorkflow
 } from "./lib/orchestration/workflows.mjs";
 import { buildPermissionProfile } from "./lib/orchestration/permissions.mjs";
-import { binaryAvailable, terminateProcessTree } from "./lib/process.mjs";
+import { binaryAvailable, runCommand, terminateProcessTree } from "./lib/process.mjs";
 import { loadPromptTemplate, interpolateTemplate } from "./lib/prompts.mjs";
 import {
   generateJobId,
@@ -100,6 +100,7 @@ function printUsage() {
       "  node scripts/codex-companion.mjs parallel [--read-only|--full-power] [--agents codex,codex-fast] [prompt]",
       "  node scripts/codex-companion.mjs graph <status|config|enable|disable|init|update|query|explain|path|context> [args]",
       "  node scripts/codex-companion.mjs ccv [--json]",
+      "  node scripts/codex-companion.mjs upgrade [--json]",
       "  node scripts/codex-companion.mjs mode [fast|architect|balanced] [--json]",
       "  node scripts/codex-companion.mjs status [job-id] [--all] [--json]",
       "  node scripts/codex-companion.mjs result [job-id] [--json]",
@@ -122,6 +123,17 @@ function readJsonFileSafe(filePath, fallback = null) {
   } catch {
     return fallback;
   }
+}
+
+function writeJsonFile(filePath, value) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+}
+
+function copyDirectoryFresh(source, destination) {
+  fs.rmSync(destination, { recursive: true, force: true });
+  fs.mkdirSync(path.dirname(destination), { recursive: true });
+  fs.cpSync(source, destination, { recursive: true });
 }
 
 function outputCommandResult(payload, rendered, asJson) {
@@ -1532,6 +1544,129 @@ async function handleCcv(argv) {
   outputResult(`${lines.join("\n").trimEnd()}\n`, false);
 }
 
+async function handleUpgrade(argv) {
+  const { options } = parseCommandInput(argv, {
+    booleanOptions: ["json"]
+  });
+  const claudePluginsRoot = path.join(process.env.HOME ?? "", ".claude", "plugins");
+  const marketplaceName = "codex-collab";
+  const pluginName = "codex";
+  const marketplaceRoot = path.join(claudePluginsRoot, "marketplaces", marketplaceName);
+  const marketplaceJsonPath = path.join(marketplaceRoot, ".claude-plugin", "marketplace.json");
+  const installedPluginsPath = path.join(claudePluginsRoot, "installed_plugins.json");
+  const steps = [];
+
+  if (!fs.existsSync(marketplaceRoot)) {
+    throw new Error(`Marketplace clone not found: ${marketplaceRoot}. Run /plugin marketplace add REESHI111/codex-plugin-cc-collab first.`);
+  }
+
+  const fetch = runCommand("git", ["fetch", "origin", "main"], {
+    cwd: marketplaceRoot,
+    maxBuffer: 10 * 1024 * 1024,
+    timeout: 120000
+  });
+  steps.push({
+    name: "fetch marketplace",
+    ok: !fetch.error && fetch.status === 0,
+    detail: fetch.error?.message ?? fetch.stderr.trim() ?? fetch.stdout.trim() ?? "fetched"
+  });
+  if (fetch.error || fetch.status !== 0) {
+    throw new Error(`Could not fetch marketplace updates: ${steps.at(-1).detail}`);
+  }
+
+  const merge = runCommand("git", ["merge", "--ff-only", "origin/main"], {
+    cwd: marketplaceRoot,
+    maxBuffer: 10 * 1024 * 1024,
+    timeout: 120000
+  });
+  steps.push({
+    name: "fast-forward marketplace",
+    ok: !merge.error && merge.status === 0,
+    detail: merge.error?.message ?? merge.stderr.trim() ?? merge.stdout.trim() ?? "up to date"
+  });
+  if (merge.error || merge.status !== 0) {
+    throw new Error(`Marketplace has local changes or cannot fast-forward: ${steps.at(-1).detail}`);
+  }
+
+  const marketplace = readJsonFileSafe(marketplaceJsonPath, {});
+  const pluginEntry = marketplace.plugins?.find?.((plugin) => plugin.name === pluginName);
+  if (!pluginEntry?.source || !pluginEntry.version) {
+    throw new Error(`Marketplace entry for ${pluginName}@${marketplaceName} is missing source/version metadata.`);
+  }
+  const sourcePath = path.resolve(marketplaceRoot, pluginEntry.source);
+  const cachePath = path.join(claudePluginsRoot, "cache", marketplaceName, pluginName, pluginEntry.version);
+  copyDirectoryFresh(sourcePath, cachePath);
+  steps.push({
+    name: "copy plugin cache",
+    ok: true,
+    detail: cachePath
+  });
+
+  const commit = runCommand("git", ["rev-parse", "HEAD"], {
+    cwd: marketplaceRoot,
+    maxBuffer: 1024 * 1024
+  });
+  const installed = readJsonFileSafe(installedPluginsPath, { version: 2, plugins: {} });
+  installed.version ??= 2;
+  installed.plugins ??= {};
+  const key = `${pluginName}@${marketplaceName}`;
+  const existing = installed.plugins[key]?.[0] ?? {};
+  installed.plugins[key] = [
+    {
+      scope: existing.scope ?? "user",
+      installPath: cachePath,
+      version: pluginEntry.version,
+      installedAt: existing.installedAt ?? new Date().toISOString(),
+      lastUpdated: new Date().toISOString(),
+      gitCommitSha: commit.status === 0 ? commit.stdout.trim() : existing.gitCommitSha ?? null
+    }
+  ];
+  writeJsonFile(installedPluginsPath, installed);
+  steps.push({
+    name: "update installed plugin pointer",
+    ok: true,
+    detail: `${key} -> ${pluginEntry.version}`
+  });
+
+  const payload = {
+    ok: true,
+    marketplace: marketplaceName,
+    plugin: pluginName,
+    version: pluginEntry.version,
+    cachePath,
+    installedPluginsPath,
+    steps,
+    nextSteps: [
+      "/reload-plugins",
+      "/codex:ccv"
+    ]
+  };
+  if (options.json) {
+    outputResult(payload, true);
+    return;
+  }
+  const lines = [
+    "# Codex Collab Upgrade",
+    "",
+    "[SYSTEM] Plugin Upgrade",
+    "",
+    `- Marketplace: ${marketplaceName}`,
+    `- Plugin: ${pluginName}`,
+    `- Installed Version: ${pluginEntry.version}`,
+    `- Cache: ${cachePath}`,
+    "",
+    "Steps:"
+  ];
+  for (const step of steps) {
+    lines.push(`- ${step.ok ? "ok" : "failed"}: ${step.name} - ${step.detail}`);
+  }
+  lines.push("", "Next steps:");
+  for (const step of payload.nextSteps) {
+    lines.push(`- ${step}`);
+  }
+  outputResult(`${lines.join("\n").trimEnd()}\n`, false);
+}
+
 async function handleStatus(argv) {
   const { options, positionals } = parseCommandInput(argv, {
     valueOptions: ["cwd", "timeout-ms", "poll-interval-ms"],
@@ -1745,6 +1880,9 @@ async function main() {
       break;
     case "ccv":
       await handleCcv(argv);
+      break;
+    case "upgrade":
+      await handleUpgrade(argv);
       break;
     case "graph-sync-worker":
       await handleGraphSyncWorker(argv);
