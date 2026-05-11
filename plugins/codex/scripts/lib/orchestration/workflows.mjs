@@ -71,6 +71,7 @@ export async function runCodexInlineWorkflow({ cwd, task, write = true, model, e
     mode: mode.id,
     onProgress
   });
+  metrics.trackGraphContext(contextGraph);
   const prompt = buildCodexInlinePrompt({
     task,
     strategyName: mode.id === "architect" ? "concise" : "fast",
@@ -144,6 +145,7 @@ export async function runPairWorkflow({ cwd, task, claudePlan, write = true, mod
     mode: mode.id,
     onProgress
   });
+  metrics.trackGraphContext(contextGraph);
   const prompt = buildPairImplementationPrompt({
     task,
     claudePlan,
@@ -220,6 +222,7 @@ export async function runDebateWorkflow({ cwd, task, claudeProposal, model, effo
     mode: mode.id,
     onProgress
   });
+  metrics.trackGraphContext(contextGraph);
   const prompt = buildDebateAlternativePrompt({
     task,
     claudeProposal,
@@ -292,6 +295,7 @@ export async function runParallelWorkflow({ cwd, task, agents, write = true, mod
     mode: mode.id,
     onProgress
   });
+  metrics.trackGraphContext(contextGraph);
 
   const runs = uniqueAgents.map(async (providerId) => {
     const provider = getProvider(config, providerId);

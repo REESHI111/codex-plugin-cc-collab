@@ -782,6 +782,58 @@ function compactEdgeGroups(edges, graph, options = {}) {
   });
 }
 
+function renderRawRetrievalText(graph, plan, query) {
+  const lines = [
+    `Graph context for: ${query}`,
+    `Retrieval confidence: ${plan.confidence}`,
+    `Workflow mode: ${plan.limits.mode.toUpperCase()}`,
+    `Retrieved nodes: ${plan.nodes.length}/${plan.graphNodeCount}`,
+    `Retrieved edges: ${plan.edges.length}/${plan.graphEdgeCount}`,
+    "",
+    "Nodes:",
+    ...plan.nodes.map((entry) => nodeDetailLine(entry, plan.limits.showScores)),
+    "",
+    "Edges:",
+    ...plan.edges.map((edge) => edgeDetailLine(edge, graph))
+  ];
+  return lines.join("\n");
+}
+
+function confidenceScore(confidence) {
+  if (confidence === "HIGH") return 90;
+  if (confidence === "MEDIUM") return 65;
+  return 35;
+}
+
+function buildRetrievalAnalytics(plan, rendered) {
+  const rawEstimatedTokens = Math.max(rendered.estimatedTokens, estimateTokens(renderRawRetrievalText(rendered.graph, plan, rendered.query)));
+  const estimatedTokenSavings = Math.max(0, rawEstimatedTokens - rendered.estimatedTokens);
+  const compressionPercent = rawEstimatedTokens > 0
+    ? Math.max(0, Math.min(100, Math.round((estimatedTokenSavings / rawEstimatedTokens) * 100)))
+    : 0;
+  const graphHitRate = plan.limits.seedLimit > 0
+    ? Math.round((plan.seeds.length / plan.limits.seedLimit) * 100)
+    : 0;
+  const detailRetention = plan.nodes.length > 0
+    ? Math.round((rendered.detailNodeCount / plan.nodes.length) * 100)
+    : 0;
+  const usefulnessScore = Math.round(
+    confidenceScore(plan.confidence) * 0.45 +
+    Math.min(100, graphHitRate) * 0.25 +
+    detailRetention * 0.15 +
+    Math.min(100, compressionPercent) * 0.15
+  );
+  return {
+    rawEstimatedTokens,
+    estimatedTokenSavings,
+    compressionPercent,
+    graphHitRate: Math.min(100, graphHitRate),
+    detailRetention,
+    usefulnessScore,
+    confidence: plan.confidence
+  };
+}
+
 function renderRetrievalText(graph, plan, query) {
   const limits = plan.limits;
   const tokenBudget = limits.tokenBudget;
@@ -847,6 +899,8 @@ function renderRetrievalText(graph, plan, query) {
     const estimatedTokens = estimateTokens(text);
     text = `${text}\n\nEstimated graph context tokens: ${estimatedTokens}/${tokenBudget}`;
     const rendered = {
+      graph,
+      query,
       text,
       estimatedTokens: estimateTokens(text),
       detailNodeCount,
@@ -1003,6 +1057,7 @@ function runJsGraphQuery(graphPath, request) {
     return { ok: false, error: "No matching graph region found." };
   }
   const rendered = renderRetrievalText(graph, plan, request.query);
+  const analytics = buildRetrievalAnalytics(plan, rendered);
   return {
     ok: true,
     action: "query",
@@ -1018,6 +1073,12 @@ function runJsGraphQuery(graphPath, request) {
       mode: plan.limits.mode,
       compressionMode: plan.limits.compressionMode,
       estimatedTokens: rendered.estimatedTokens,
+      rawEstimatedTokens: analytics.rawEstimatedTokens,
+      estimatedTokenSavings: analytics.estimatedTokenSavings,
+      compressionPercent: analytics.compressionPercent,
+      graphHitRate: analytics.graphHitRate,
+      detailRetention: analytics.detailRetention,
+      usefulnessScore: analytics.usefulnessScore,
       detailNodeCount: rendered.detailNodeCount,
       detailEdgeCount: rendered.detailEdgeCount,
       compressedNodeCount: rendered.compressedNodeCount,
@@ -1718,6 +1779,14 @@ export class GraphifyContextProvider extends ContextGraphProvider {
       graph,
       memory,
       text: truncateText(sections.join("\n\n"), tokenBudget),
+      analytics: graph.retrieval
+        ? {
+            ...graph.retrieval,
+            memoryEntryCount: memory.ok ? memory.entries.length : 0,
+            finalContextTokens: estimateTokens(sections.join("\n\n")),
+            finalTokenBudget: tokenBudget
+          }
+        : null,
       budget: {
         mode,
         tokenBudget,
@@ -1935,6 +2004,7 @@ export async function retrieveContextGraphForTask({ cwd, config, task, workflow,
     status,
     tokenBudget,
     mode: activeMode,
+    analytics: result.analytics,
     budget: result.budget,
     detail: "Injected task-scoped graph context."
   };

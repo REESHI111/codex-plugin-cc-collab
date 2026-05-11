@@ -345,6 +345,12 @@ function appendContextGraphBlock(lines, contextGraph) {
     if (retrieval.detail) {
       lines.push(`- Retrieval Detail: ${retrieval.detail}`);
     }
+    if (retrieval.analytics) {
+      lines.push(`- Retrieval Confidence: ${retrieval.analytics.confidence ?? "unknown"}`);
+      lines.push(`- Retrieved Nodes: ${retrieval.analytics.nodeCount ?? 0}`);
+      lines.push(`- Token Savings: ${retrieval.analytics.estimatedTokenSavings ?? 0}`);
+      lines.push(`- Usefulness Score: ${retrieval.analytics.usefulnessScore ?? 0}/100`);
+    }
   }
   const update = contextGraph.update;
   if (update) {

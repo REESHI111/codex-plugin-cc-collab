@@ -41,6 +41,19 @@ export function createMetricsCollector(config = {}) {
       inputTokens: 0,
       outputTokens: 0
     },
+    graphContext: {
+      retrievals: [],
+      injectedCount: 0,
+      skippedCount: 0,
+      retrievedNodeCount: 0,
+      retrievedEdgeCount: 0,
+      estimatedTokens: 0,
+      rawEstimatedTokens: 0,
+      estimatedTokenSavings: 0,
+      averageUsefulnessScore: 0,
+      averageGraphHitRate: 0,
+      highestConfidence: "NONE"
+    },
     filesModified: [],
     shellCommands: [],
     estimatedCost: 0
@@ -67,6 +80,45 @@ export function createMetricsCollector(config = {}) {
       if (filePath) {
         metrics.filesModified.push(String(filePath));
       }
+    },
+    trackGraphContext(context = {}) {
+      const analytics = context.analytics ?? context.retrieval ?? null;
+      if (!context.injected || !analytics) {
+        metrics.graphContext.skippedCount += 1;
+        return;
+      }
+      const entry = {
+        workflow: context.workflow ?? metrics.workflow,
+        mode: context.mode ?? metrics.mode,
+        confidence: analytics.confidence ?? "LOW",
+        nodeCount: Number(analytics.nodeCount ?? analytics.retrievedNodeCount ?? 0) || 0,
+        edgeCount: Number(analytics.edgeCount ?? analytics.retrievedEdgeCount ?? 0) || 0,
+        estimatedTokens: Number(analytics.estimatedTokens ?? 0) || 0,
+        rawEstimatedTokens: Number(analytics.rawEstimatedTokens ?? analytics.estimatedTokens ?? 0) || 0,
+        estimatedTokenSavings: Number(analytics.estimatedTokenSavings ?? 0) || 0,
+        compressionPercent: Number(analytics.compressionPercent ?? 0) || 0,
+        graphHitRate: Number(analytics.graphHitRate ?? 0) || 0,
+        usefulnessScore: Number(analytics.usefulnessScore ?? 0) || 0,
+        memoryEntryCount: Number(analytics.memoryEntryCount ?? 0) || 0
+      };
+      metrics.graphContext.retrievals.push(entry);
+      metrics.graphContext.injectedCount += 1;
+      metrics.graphContext.retrievedNodeCount += entry.nodeCount;
+      metrics.graphContext.retrievedEdgeCount += entry.edgeCount;
+      metrics.graphContext.estimatedTokens += entry.estimatedTokens;
+      metrics.graphContext.rawEstimatedTokens += entry.rawEstimatedTokens;
+      metrics.graphContext.estimatedTokenSavings += entry.estimatedTokenSavings;
+      const retrievals = metrics.graphContext.retrievals;
+      metrics.graphContext.averageUsefulnessScore = Math.round(
+        retrievals.reduce((sum, item) => sum + item.usefulnessScore, 0) / retrievals.length
+      );
+      metrics.graphContext.averageGraphHitRate = Math.round(
+        retrievals.reduce((sum, item) => sum + item.graphHitRate, 0) / retrievals.length
+      );
+      const confidenceRank = { NONE: 0, LOW: 1, MEDIUM: 2, HIGH: 3 };
+      metrics.graphContext.highestConfidence = retrievals
+        .map((item) => item.confidence)
+        .sort((left, right) => (confidenceRank[right] ?? 0) - (confidenceRank[left] ?? 0))[0] ?? "NONE";
     },
     absorbCodexResult(result) {
       this.trackModelUsage("codex", {
@@ -103,7 +155,7 @@ export function renderExecutionMetrics(metrics) {
     return "";
   }
   const seconds = Math.max(0, Math.round((metrics.durationMs ?? 0) / 1000));
-  return [
+  const lines = [
     "[SYSTEM] Execution Metrics",
     "",
     "Workflow:",
@@ -131,5 +183,37 @@ export function renderExecutionMetrics(metrics) {
     "",
     "Estimated Cost:",
     `- $${Number(metrics.estimatedCost ?? 0).toFixed(2)}`
-  ].join("\n");
+  ];
+  const graph = metrics.graphContext;
+  if (graph?.retrievals?.length) {
+    const compressionPercent = graph.rawEstimatedTokens > 0
+      ? Math.round((graph.estimatedTokenSavings / graph.rawEstimatedTokens) * 100)
+      : 0;
+    lines.push(
+      "",
+      "[SYSTEM] Graph Context Metrics",
+      "",
+      "Retrieved Nodes:",
+      `- ${graph.retrievedNodeCount ?? 0}`,
+      "",
+      "Retrieved Edges:",
+      `- ${graph.retrievedEdgeCount ?? 0}`,
+      "",
+      "Compressed Context:",
+      `- ${compressionPercent}%`,
+      "",
+      "Estimated Token Savings:",
+      `- ${graph.estimatedTokenSavings ?? 0}`,
+      "",
+      "Graph Hit Rate:",
+      `- ${graph.averageGraphHitRate ?? 0}%`,
+      "",
+      "Retrieval Usefulness:",
+      `- ${graph.averageUsefulnessScore ?? 0}/100`,
+      "",
+      "Retrieval Confidence:",
+      `- ${graph.highestConfidence ?? "NONE"}`
+    );
+  }
+  return lines.join("\n");
 }

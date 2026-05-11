@@ -38,6 +38,21 @@ test("metrics collector estimates usage and renders execution metrics", () => {
   metrics.startExecution({ workflow: "pair", mode: "fast" });
   metrics.trackModelUsage("claude", { inputText: "plan input", outputText: "plan output" });
   metrics.trackModelUsage("codex", { inputTokens: 100, outputTokens: 50 });
+  metrics.trackGraphContext({
+    injected: true,
+    mode: "fast",
+    analytics: {
+      confidence: "HIGH",
+      nodeCount: 18,
+      edgeCount: 24,
+      estimatedTokens: 420,
+      rawEstimatedTokens: 1800,
+      estimatedTokenSavings: 1380,
+      compressionPercent: 77,
+      graphHitRate: 80,
+      usefulnessScore: 86
+    }
+  });
   metrics.trackShellCommand("npm test");
   metrics.trackFileChange("README.md");
   const finalMetrics = metrics.finishExecution();
@@ -50,6 +65,10 @@ test("metrics collector estimates usage and renders execution metrics", () => {
   assert.match(rendered, /\[SYSTEM\] Execution Metrics/);
   assert.match(rendered, /Workflow:\n- pair/);
   assert.match(rendered, /Mode:\n- FAST/);
+  assert.match(rendered, /\[SYSTEM\] Graph Context Metrics/);
+  assert.match(rendered, /Retrieved Nodes:\n- 18/);
+  assert.match(rendered, /Estimated Token Savings:\n- 1380/);
+  assert.match(rendered, /Retrieval Confidence:\n- HIGH/);
 });
 
 test("workflow modes normalize and reject unsupported values", () => {
@@ -155,6 +174,10 @@ test("Graphify provider can query graph json without Python graph dependencies",
   assert.match(result.text, /score:/);
   assert.match(result.text, /Auth|Client/);
   assert.ok(result.retrieval.nodeCount <= 32);
+  assert.ok(result.retrieval.rawEstimatedTokens >= result.retrieval.estimatedTokens);
+  assert.ok(result.retrieval.estimatedTokenSavings >= 0);
+  assert.ok(result.retrieval.usefulnessScore > 0);
+  assert.ok(result.retrieval.graphHitRate > 0);
 });
 
 test("Graphify JS retrieval ranks file path matches into compact context", async () => {
@@ -226,6 +249,8 @@ test("Graphify JS retrieval compresses context within small budgets", async () =
   assert.match(result.text, /Context budget: 360 tokens/);
   assert.match(result.text, /Compressed supporting nodes:|Priority nodes:/);
   assert.ok(result.retrieval.estimatedTokens <= 420);
+  assert.ok(result.retrieval.compressionPercent >= 0);
+  assert.ok(result.retrieval.estimatedTokenSavings >= 0);
   assert.ok(result.retrieval.detailNodeCount <= result.retrieval.nodeCount);
 });
 
@@ -283,6 +308,8 @@ test("context graph retrieval applies mode-aware budgets and depth", async () =>
   assert.equal(architect.mode, "architect");
   assert.equal(fast.budget.tokenBudget, 700);
   assert.equal(architect.budget.tokenBudget, 2200);
+  assert.ok(fast.analytics.usefulnessScore > 0);
+  assert.ok(architect.analytics.estimatedTokenSavings >= 0);
   assert.ok(architect.budget.graphBudget > fast.budget.graphBudget);
   assert.match(fast.text, /Workflow mode: FAST/);
   assert.match(architect.text, /Workflow mode: ARCHITECT/);

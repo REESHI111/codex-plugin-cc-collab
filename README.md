@@ -662,6 +662,29 @@ Commands Executed:
 
 Estimated Cost:
 - $0.31
+
+[SYSTEM] Graph Context Metrics
+
+Retrieved Nodes:
+- 18
+
+Retrieved Edges:
+- 24
+
+Compressed Context:
+- 77%
+
+Estimated Token Savings:
+- 1380
+
+Graph Hit Rate:
+- 80%
+
+Retrieval Usefulness:
+- 86/100
+
+Retrieval Confidence:
+- HIGH
 ```
 
 Metrics currently track:
@@ -673,6 +696,10 @@ Metrics currently track:
 - shell commands executed
 - estimated cost
 - workflow and mode
+- retrieved graph node and edge counts
+- graph context compression percentage
+- estimated token savings versus uncompressed graph output
+- graph hit rate, retrieval usefulness score, and confidence
 
 ## Loop Protection
 
@@ -851,6 +878,7 @@ This collaborative runtime now includes:
 - task-scoped graph context injection into collaborative prompts
 - relevance-ranked graph retrieval with bounded node/edge selection and visible retrieval reasons
 - token-aware graph compression with fast/balanced/architect retrieval profiles
+- graph context effectiveness analytics in execution metrics
 - execution memory saved under `graphify-out/memory/orchestration/`
 - `/codex:graph context` retrieval that combines graph relationships with prior workflow memory
 - graph update locking, pending-update recovery, stale lock handling, and parallel write-conflict diagnostics
@@ -884,7 +912,7 @@ Use this section to verify what was implemented across the architecture upgrade:
    Collaborative prompts can now receive task-scoped graph context when `contextGraph.enabled=true`, with mode-aware budgets and adaptive compression to avoid token spam.
 
 8. **Execution memory layer**  
-   Workflow summaries are saved under `graphify-out/memory/orchestration/` and retrieved with graph context for future tasks.
+   Workflow summaries are saved under `graphify-out/memory/orchestration/` and retrieved with graph context for future tasks. Execution metrics now also report graph retrieval effectiveness, token savings, hit rate, and usefulness score.
 
 9. **Live synchronization safety**  
    Added graph update locking, pending-update recovery, stale lock handling, failed-update requeueing, parallel write-conflict diagnostics, workflow background sync, and session-end sync for external edits.
