@@ -510,6 +510,38 @@ Add `codex-companion.config.json` at the workspace root, or `.codex-companion/co
       "balanced": 2000,
       "architect": 4000
     },
+    "queryDepthByMode": {
+      "fast": 1,
+      "balanced": 2,
+      "architect": 3
+    },
+    "retrievalLimitsByMode": {
+      "fast": {
+        "seedLimit": 4,
+        "nodeLimit": 18,
+        "edgeLimit": 24,
+        "detailNodeLimit": 6,
+        "detailEdgeLimit": 10,
+        "compressionMode": "high"
+      },
+      "balanced": {
+        "seedLimit": 6,
+        "nodeLimit": 32,
+        "edgeLimit": 48,
+        "detailNodeLimit": 12,
+        "detailEdgeLimit": 24,
+        "compressionMode": "moderate"
+      },
+      "architect": {
+        "seedLimit": 10,
+        "nodeLimit": 80,
+        "edgeLimit": 120,
+        "detailNodeLimit": 28,
+        "detailEdgeLimit": 56,
+        "compressionMode": "light"
+      }
+    },
+    "adaptiveCompression": true,
     "memoryRetrieval": true,
     "maxMemoryEntries": 3,
     "memoryTokenBudget": 1000,
@@ -538,6 +570,7 @@ The context graph layer is optional and disabled by default for compatibility. E
     "retrievalSeedLimit": 6,
     "retrievalNodeLimit": 32,
     "retrievalEdgeLimit": 48,
+    "adaptiveCompression": true,
     "showRetrievalScores": true
   }
 }
@@ -567,6 +600,7 @@ Current behavior:
 - `/codex:graph context` combines graph relationships with relevant prior orchestration memory
 - collaborative prompts receive task-scoped graph context when `injectIntoPrompts` is enabled
 - graph retrieval ranks seed nodes by task relevance, applies architecture-aware boosts, expands only bounded neighborhoods, and shows node scores/reasons when `showRetrievalScores=true`
+- graph prompt injection uses mode-aware context budgets: fast mode compresses aggressively, balanced mode keeps moderate detail, and architect mode explores deeper graph neighborhoods
 - collaborative workflows call the graph updater after Codex-reported file changes
 - Claude Code session end detects git-visible changed files from any source and queues a background graph sync when `syncOnSessionEnd=true`
 - graph updates use a lock file and pending-update manifest to avoid concurrent write collisions
@@ -589,8 +623,12 @@ Retrieval tuning:
 - `retrievalSeedLimit` controls how many top-ranked graph nodes seed a task query.
 - `retrievalNodeLimit` caps selected nodes after ranking and bounded expansion.
 - `retrievalEdgeLimit` caps selected edges among chosen nodes.
+- `tokenBudgetByMode` controls prompt context size per workflow mode.
+- `queryDepthByMode` controls graph expansion depth per workflow mode.
+- `retrievalLimitsByMode` controls mode-specific seed, node, edge, and detail limits.
+- `adaptiveCompression` preserves priority nodes first, then compresses lower-priority nodes and edges into compact summaries.
 - `showRetrievalScores` exposes score and reason metadata in graph context for debugging.
-- Token budget still acts as a hard output truncation guard after retrieval ranking.
+- Token budget still acts as a hard output guard, but compression happens before truncation so high-signal context is not lost first.
 
 ## Execution Metrics
 
@@ -812,6 +850,7 @@ This collaborative runtime now includes:
 - context graph bootstrap, config preview, enable, and disable commands
 - task-scoped graph context injection into collaborative prompts
 - relevance-ranked graph retrieval with bounded node/edge selection and visible retrieval reasons
+- token-aware graph compression with fast/balanced/architect retrieval profiles
 - execution memory saved under `graphify-out/memory/orchestration/`
 - `/codex:graph context` retrieval that combines graph relationships with prior workflow memory
 - graph update locking, pending-update recovery, stale lock handling, and parallel write-conflict diagnostics
@@ -842,7 +881,7 @@ Use this section to verify what was implemented across the architecture upgrade:
    Added `/codex:graph status`, `query`, `explain`, `path`, and `context` with relevance-ranked, bounded graph output.
 
 7. **Prompt-time graph context injection**  
-   Collaborative prompts can now receive task-scoped graph context when `contextGraph.enabled=true`.
+   Collaborative prompts can now receive task-scoped graph context when `contextGraph.enabled=true`, with mode-aware budgets and adaptive compression to avoid token spam.
 
 8. **Execution memory layer**  
    Workflow summaries are saved under `graphify-out/memory/orchestration/` and retrieved with graph context for future tasks.

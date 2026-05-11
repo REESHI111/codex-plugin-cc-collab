@@ -195,6 +195,99 @@ test("Graphify JS retrieval honors configured node and edge limits", async () =>
   assert.match(result.text, /Retrieved nodes:/);
 });
 
+test("Graphify JS retrieval compresses context within small budgets", async () => {
+  const provider = new GraphifyContextProvider({
+    cwd: process.cwd(),
+    config: {
+      contextGraph: {
+        enabled: true,
+        graphPath: "graphify-7/worked/httpx/graph.json",
+        retrievalLimitsByMode: {
+          fast: {
+            seedLimit: 4,
+            nodeLimit: 18,
+            edgeLimit: 24,
+            detailNodeLimit: 4,
+            detailEdgeLimit: 6,
+            compressionMode: "high"
+          }
+        }
+      }
+    }
+  });
+  const result = await provider.queryGraph("auth client retry transport headers cookies", {
+    mode: "fast",
+    tokenBudget: 360
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.retrieval.mode, "fast");
+  assert.equal(result.retrieval.compressionMode, "high");
+  assert.match(result.text, /Context budget: 360 tokens/);
+  assert.match(result.text, /Compressed supporting nodes:|Priority nodes:/);
+  assert.ok(result.retrieval.estimatedTokens <= 420);
+  assert.ok(result.retrieval.detailNodeCount <= result.retrieval.nodeCount);
+});
+
+test("context graph retrieval applies mode-aware budgets and depth", async () => {
+  const config = {
+    contextGraph: {
+      enabled: true,
+      graphPath: "graphify-7/worked/httpx/graph.json",
+      tokenBudgetByMode: {
+        fast: 700,
+        architect: 2200
+      },
+      queryDepthByMode: {
+        fast: 1,
+        architect: 3
+      },
+      retrievalLimitsByMode: {
+        fast: {
+          seedLimit: 3,
+          nodeLimit: 10,
+          edgeLimit: 12,
+          detailNodeLimit: 4,
+          detailEdgeLimit: 6,
+          compressionMode: "high"
+        },
+        architect: {
+          seedLimit: 8,
+          nodeLimit: 60,
+          edgeLimit: 90,
+          detailNodeLimit: 20,
+          detailEdgeLimit: 40,
+          compressionMode: "light"
+        }
+      }
+    }
+  };
+  const fast = await retrieveContextGraphForTask({
+    cwd: process.cwd(),
+    config,
+    task: "change auth client retry transport",
+    workflow: "codex-inline",
+    mode: "fast"
+  });
+  const architect = await retrieveContextGraphForTask({
+    cwd: process.cwd(),
+    config,
+    task: "change auth client retry transport",
+    workflow: "pair",
+    mode: "architect"
+  });
+
+  assert.equal(fast.injected, true);
+  assert.equal(architect.injected, true);
+  assert.equal(fast.mode, "fast");
+  assert.equal(architect.mode, "architect");
+  assert.equal(fast.budget.tokenBudget, 700);
+  assert.equal(architect.budget.tokenBudget, 2200);
+  assert.ok(architect.budget.graphBudget > fast.budget.graphBudget);
+  assert.match(fast.text, /Workflow mode: FAST/);
+  assert.match(architect.text, /Workflow mode: ARCHITECT/);
+});
+
 
 test("context graph retrieval is token-bounded and prompt-ready", async () => {
   const context = await retrieveContextGraphForTask({

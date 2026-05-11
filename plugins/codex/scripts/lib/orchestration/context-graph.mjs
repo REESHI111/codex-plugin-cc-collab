@@ -12,9 +12,46 @@ const DEFAULT_QUERY_DEPTH = 2;
 const DEFAULT_RETRIEVAL_SEED_LIMIT = 6;
 const DEFAULT_RETRIEVAL_NODE_LIMIT = 32;
 const DEFAULT_RETRIEVAL_EDGE_LIMIT = 48;
+const DEFAULT_RETRIEVAL_DETAIL_NODE_LIMIT = 12;
+const DEFAULT_RETRIEVAL_DETAIL_EDGE_LIMIT = 24;
 const DEFAULT_MEMORY_TOKEN_BUDGET = 1000;
 const DEFAULT_MEMORY_LIMIT = 3;
 const DEFAULT_LOCK_STALE_MS = 10 * 60 * 1000;
+const RETRIEVAL_MODE_PROFILES = {
+  fast: {
+    tokenBudget: 1200,
+    depth: 1,
+    seedLimit: 4,
+    nodeLimit: 18,
+    edgeLimit: 24,
+    detailNodeLimit: 6,
+    detailEdgeLimit: 10,
+    graphBudgetRatio: 0.75,
+    compressionMode: "high"
+  },
+  balanced: {
+    tokenBudget: 2000,
+    depth: 2,
+    seedLimit: 6,
+    nodeLimit: 32,
+    edgeLimit: 48,
+    detailNodeLimit: 12,
+    detailEdgeLimit: 24,
+    graphBudgetRatio: 0.65,
+    compressionMode: "moderate"
+  },
+  architect: {
+    tokenBudget: 4000,
+    depth: 3,
+    seedLimit: 10,
+    nodeLimit: 80,
+    edgeLimit: 120,
+    detailNodeLimit: 28,
+    detailEdgeLimit: 56,
+    graphBudgetRatio: 0.7,
+    compressionMode: "light"
+  }
+};
 const SUPPORTED_PROVIDERS = new Set(["graphify"]);
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const PLUGIN_ROOT = path.resolve(MODULE_DIR, "../../../..");
@@ -41,14 +78,47 @@ export function buildRecommendedContextGraphConfig(overrides = {}) {
     retrievalSeedLimit: DEFAULT_RETRIEVAL_SEED_LIMIT,
     retrievalNodeLimit: DEFAULT_RETRIEVAL_NODE_LIMIT,
     retrievalEdgeLimit: DEFAULT_RETRIEVAL_EDGE_LIMIT,
+    retrievalDetailNodeLimit: DEFAULT_RETRIEVAL_DETAIL_NODE_LIMIT,
+    retrievalDetailEdgeLimit: DEFAULT_RETRIEVAL_DETAIL_EDGE_LIMIT,
+    adaptiveCompression: true,
     showRetrievalScores: true,
     injectIntoPrompts: true,
     promptTokenBudget: DEFAULT_QUERY_TOKEN_BUDGET,
-    promptQueryDepth: DEFAULT_QUERY_DEPTH,
     tokenBudgetByMode: {
       fast: 1200,
       balanced: 2000,
       architect: 4000
+    },
+    queryDepthByMode: {
+      fast: 1,
+      balanced: 2,
+      architect: 3
+    },
+    retrievalLimitsByMode: {
+      fast: {
+        seedLimit: 4,
+        nodeLimit: 18,
+        edgeLimit: 24,
+        detailNodeLimit: 6,
+        detailEdgeLimit: 10,
+        compressionMode: "high"
+      },
+      balanced: {
+        seedLimit: 6,
+        nodeLimit: 32,
+        edgeLimit: 48,
+        detailNodeLimit: 12,
+        detailEdgeLimit: 24,
+        compressionMode: "moderate"
+      },
+      architect: {
+        seedLimit: 10,
+        nodeLimit: 80,
+        edgeLimit: 120,
+        detailNodeLimit: 28,
+        detailEdgeLimit: 56,
+        compressionMode: "light"
+      }
     },
     memoryRetrieval: true,
     maxMemoryEntries: DEFAULT_MEMORY_LIMIT,
@@ -513,20 +583,52 @@ function rankGraphEdges(graph, selectedNodeIds, terms) {
     .map((entry) => entry.edge);
 }
 
+function normalizeRetrievalMode(mode) {
+  const value = String(mode ?? "").toLowerCase();
+  return RETRIEVAL_MODE_PROFILES[value] ? value : "balanced";
+}
+
+function retrievalModeProfile(mode) {
+  return RETRIEVAL_MODE_PROFILES[normalizeRetrievalMode(mode)];
+}
+
+function positiveNumber(value, fallback) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? number : fallback;
+}
+
 function resolveRetrievalLimits(request = {}) {
-  const tokenBudget = Math.max(200, Number(request.tokenBudget ?? DEFAULT_QUERY_TOKEN_BUDGET) || DEFAULT_QUERY_TOKEN_BUDGET);
+  const mode = normalizeRetrievalMode(request.mode);
+  const profile = retrievalModeProfile(mode);
+  const modeLimits = isNonEmptyObject(request.modeLimits) ? request.modeLimits : {};
+  const tokenBudget = Math.max(200, positiveNumber(request.tokenBudget, profile.tokenBudget));
+  const nodeLimit = Math.max(6, Math.min(
+    positiveNumber(request.nodeLimit ?? modeLimits.nodeLimit, profile.nodeLimit),
+    positiveNumber(request.maxNodeLimit, Math.max(profile.nodeLimit, 120))
+  ));
+  const edgeLimit = Math.max(8, Math.min(
+    positiveNumber(request.edgeLimit ?? modeLimits.edgeLimit, profile.edgeLimit),
+    positiveNumber(request.maxEdgeLimit, Math.max(profile.edgeLimit, 180))
+  ));
+  const detailNodeLimit = Math.max(3, Math.min(
+    positiveNumber(request.detailNodeLimit ?? modeLimits.detailNodeLimit, profile.detailNodeLimit ?? DEFAULT_RETRIEVAL_DETAIL_NODE_LIMIT),
+    nodeLimit
+  ));
+  const detailEdgeLimit = Math.max(4, Math.min(
+    positiveNumber(request.detailEdgeLimit ?? modeLimits.detailEdgeLimit, profile.detailEdgeLimit ?? DEFAULT_RETRIEVAL_DETAIL_EDGE_LIMIT),
+    edgeLimit
+  ));
   return {
+    mode,
     tokenBudget,
-    depth: Math.max(1, Number(request.depth ?? DEFAULT_QUERY_DEPTH) || DEFAULT_QUERY_DEPTH),
-    seedLimit: Math.max(1, Number(request.seedLimit ?? DEFAULT_RETRIEVAL_SEED_LIMIT) || DEFAULT_RETRIEVAL_SEED_LIMIT),
-    nodeLimit: Math.max(6, Math.min(
-      Number(request.nodeLimit ?? DEFAULT_RETRIEVAL_NODE_LIMIT) || DEFAULT_RETRIEVAL_NODE_LIMIT,
-      Math.max(8, Math.floor(tokenBudget / 45))
-    )),
-    edgeLimit: Math.max(8, Math.min(
-      Number(request.edgeLimit ?? DEFAULT_RETRIEVAL_EDGE_LIMIT) || DEFAULT_RETRIEVAL_EDGE_LIMIT,
-      Math.max(12, Math.floor(tokenBudget / 35))
-    )),
+    depth: Math.max(1, positiveNumber(request.depth ?? modeLimits.depth, profile.depth ?? DEFAULT_QUERY_DEPTH)),
+    seedLimit: Math.max(1, positiveNumber(request.seedLimit ?? modeLimits.seedLimit, profile.seedLimit ?? DEFAULT_RETRIEVAL_SEED_LIMIT)),
+    nodeLimit,
+    edgeLimit,
+    detailNodeLimit,
+    detailEdgeLimit,
+    adaptiveCompression: request.adaptiveCompression !== false,
+    compressionMode: String(request.compressionMode ?? modeLimits.compressionMode ?? profile.compressionMode ?? "moderate"),
     showScores: request.showScores !== false
   };
 }
@@ -611,10 +713,158 @@ function buildRetrievalPlan(graph, query, request = {}) {
   };
 }
 
+function estimateTokens(text) {
+  return Math.ceil(String(text ?? "").length / 4);
+}
+
 function truncateText(text, tokenBudget) {
-  const limit = Math.max(200, Number(tokenBudget ?? DEFAULT_QUERY_TOKEN_BUDGET) * 3);
+  const limit = Math.max(200, Number(tokenBudget ?? DEFAULT_QUERY_TOKEN_BUDGET) * 4);
   const value = String(text ?? "");
   return value.length > limit ? `${value.slice(0, limit)}\n...truncated...` : value;
+}
+
+function compactNodeLabel(node = {}) {
+  return String(node.label ?? node.name ?? node.id ?? "unknown");
+}
+
+function compactSourceFile(node = {}) {
+  return String(node.source_file ?? node.file ?? "").trim();
+}
+
+function nodeDetailLine(entry, showScores) {
+  const node = entry.node;
+  const score = showScores ? ` score:${Math.round(entry.score)}` : "";
+  const reasons = showScores ? ` reasons:${entry.reasons.join(",")}` : "";
+  return `- ${compactNodeLabel(node)} [${node.id}]${score}${reasons}${compactSourceFile(node) ? ` (${compactSourceFile(node)})` : ""}`;
+}
+
+function compactNodeGroups(entries, options = {}) {
+  const maxGroups = Math.max(1, Number(options.maxGroups ?? 8) || 8);
+  const maxLabels = Math.max(2, Number(options.maxLabels ?? 5) || 5);
+  const groups = new Map();
+  for (const entry of entries) {
+    const file = compactSourceFile(entry.node) || "(no source file)";
+    if (!groups.has(file)) {
+      groups.set(file, []);
+    }
+    groups.get(file).push(compactNodeLabel(entry.node));
+  }
+  return [...groups.entries()].slice(0, maxGroups).map(([file, labels]) => {
+    const shown = unique(labels).slice(0, maxLabels);
+    const hidden = Math.max(0, unique(labels).length - shown.length);
+    return `- ${file}: ${shown.join(", ")}${hidden ? ` (+${hidden} more)` : ""}`;
+  });
+}
+
+function edgeDetailLine(edge, graph) {
+  const source = graph.nodeMap.get(edge.source);
+  const target = graph.nodeMap.get(edge.target);
+  return `- ${compactNodeLabel(source ?? { id: edge.source })} --${edge.relation}--> ${compactNodeLabel(target ?? { id: edge.target })}`;
+}
+
+function compactEdgeGroups(edges, graph, options = {}) {
+  const maxRelations = Math.max(1, Number(options.maxRelations ?? 8) || 8);
+  const maxPairs = Math.max(1, Number(options.maxPairs ?? 4) || 4);
+  const groups = new Map();
+  for (const edge of edges) {
+    const relation = String(edge.relation ?? "relates");
+    if (!groups.has(relation)) {
+      groups.set(relation, []);
+    }
+    const source = graph.nodeMap.get(edge.source);
+    const target = graph.nodeMap.get(edge.target);
+    groups.get(relation).push(`${compactNodeLabel(source ?? { id: edge.source })} -> ${compactNodeLabel(target ?? { id: edge.target })}`);
+  }
+  return [...groups.entries()].slice(0, maxRelations).map(([relation, pairs]) => {
+    const shown = unique(pairs).slice(0, maxPairs);
+    const hidden = Math.max(0, unique(pairs).length - shown.length);
+    return `- ${relation}: ${shown.join("; ")}${hidden ? ` (+${hidden} more)` : ""}`;
+  });
+}
+
+function renderRetrievalText(graph, plan, query) {
+  const limits = plan.limits;
+  const tokenBudget = limits.tokenBudget;
+  const attempts = limits.adaptiveCompression
+    ? [
+        { detailScale: 1, supportScale: 1, includeSupportEdges: true },
+        { detailScale: 0.8, supportScale: 0.75, includeSupportEdges: true },
+        { detailScale: 0.6, supportScale: 0.5, includeSupportEdges: false },
+        { detailScale: 0.4, supportScale: 0.25, includeSupportEdges: false }
+      ]
+    : [{ detailScale: 1, supportScale: 1, includeSupportEdges: true }];
+  let best = null;
+
+  for (const attempt of attempts) {
+    const minDetailNodes = Math.min(plan.nodes.length, Math.max(3, plan.seeds.length));
+    const detailNodeCount = Math.min(
+      plan.nodes.length,
+      Math.max(minDetailNodes, Math.floor(limits.detailNodeLimit * attempt.detailScale))
+    );
+    const detailEdgeCount = Math.min(
+      plan.edges.length,
+      Math.max(2, Math.floor(limits.detailEdgeLimit * attempt.detailScale))
+    );
+    const detailNodes = plan.nodes.slice(0, detailNodeCount);
+    const supportingNodes = plan.nodes.slice(detailNodeCount);
+    const detailEdges = plan.edges.slice(0, detailEdgeCount);
+    const supportingEdges = plan.edges.slice(detailEdgeCount);
+    const compactGroupLimit = Math.max(1, Math.floor(8 * attempt.supportScale));
+    const lines = [
+      `Graph context for: ${query}`,
+      `Retrieval confidence: ${plan.confidence}`,
+      `Workflow mode: ${limits.mode.toUpperCase()}`,
+      `Context budget: ${tokenBudget} tokens`,
+      `Compression: ${limits.compressionMode}`,
+      `Retrieved nodes: ${plan.nodes.length}/${plan.graphNodeCount}`,
+      `Retrieved edges: ${plan.edges.length}/${plan.graphEdgeCount}`,
+      "",
+      "Priority nodes:",
+      ...detailNodes.map((entry) => nodeDetailLine(entry, limits.showScores))
+    ];
+
+    if (supportingNodes.length) {
+      const compactNodes = compactNodeGroups(supportingNodes, {
+        maxGroups: compactGroupLimit,
+        maxLabels: limits.compressionMode === "high" ? 4 : 6
+      });
+      lines.push("", `Compressed supporting nodes: ${supportingNodes.length}`, ...compactNodes);
+    }
+
+    if (detailEdges.length) {
+      lines.push("", "Priority edges:", ...detailEdges.map((edge) => edgeDetailLine(edge, graph)));
+    }
+
+    if (attempt.includeSupportEdges && supportingEdges.length) {
+      const compactEdges = compactEdgeGroups(supportingEdges, graph, {
+        maxRelations: compactGroupLimit,
+        maxPairs: limits.compressionMode === "high" ? 3 : 5
+      });
+      lines.push("", `Compressed supporting edges: ${supportingEdges.length}`, ...compactEdges);
+    }
+
+    let text = lines.join("\n");
+    const estimatedTokens = estimateTokens(text);
+    text = `${text}\n\nEstimated graph context tokens: ${estimatedTokens}/${tokenBudget}`;
+    const rendered = {
+      text,
+      estimatedTokens: estimateTokens(text),
+      detailNodeCount,
+      detailEdgeCount,
+      compressedNodeCount: supportingNodes.length,
+      compressedEdgeCount: supportingEdges.length
+    };
+    best = rendered;
+    if (rendered.estimatedTokens <= tokenBudget) {
+      return rendered;
+    }
+  }
+
+  return {
+    ...best,
+    text: truncateText(best?.text ?? "", tokenBudget),
+    truncated: estimateTokens(best?.text ?? "") > tokenBudget
+  };
 }
 
 function scoreText(text, terms) {
@@ -752,27 +1002,7 @@ function runJsGraphQuery(graphPath, request) {
   if (plan.seeds.length === 0 || plan.nodes.length === 0) {
     return { ok: false, error: "No matching graph region found." };
   }
-  const lines = [
-    `Graph context for: ${request.query}`,
-    `Retrieval confidence: ${plan.confidence}`,
-    `Retrieved nodes: ${plan.nodes.length}/${plan.graphNodeCount}`,
-    `Retrieved edges: ${plan.edges.length}/${plan.graphEdgeCount}`,
-    "",
-    "Nodes:",
-    ...plan.nodes.map((entry) => {
-      const node = entry.node;
-      const score = plan.limits.showScores ? ` score:${Math.round(entry.score)}` : "";
-      const reasons = plan.limits.showScores ? ` reasons:${entry.reasons.join(",")}` : "";
-      return `- ${node.label ?? node.id} [${node.id}]${score}${reasons}${node.source_file ? ` (${node.source_file})` : ""}`;
-    }),
-    "",
-    "Edges:",
-    ...plan.edges.map((edge) => {
-      const source = graph.nodeMap.get(edge.source);
-      const target = graph.nodeMap.get(edge.target);
-      return `- ${source?.label ?? edge.source} --${edge.relation}--> ${target?.label ?? edge.target}`;
-    })
-  ];
+  const rendered = renderRetrievalText(graph, plan, request.query);
   return {
     ok: true,
     action: "query",
@@ -784,9 +1014,17 @@ function runJsGraphQuery(graphPath, request) {
       graphEdgeCount: plan.graphEdgeCount,
       seedCount: plan.seeds.length,
       tokenBudget: plan.limits.tokenBudget,
-      depth: plan.limits.depth
+      depth: plan.limits.depth,
+      mode: plan.limits.mode,
+      compressionMode: plan.limits.compressionMode,
+      estimatedTokens: rendered.estimatedTokens,
+      detailNodeCount: rendered.detailNodeCount,
+      detailEdgeCount: rendered.detailEdgeCount,
+      compressedNodeCount: rendered.compressedNodeCount,
+      compressedEdgeCount: rendered.compressedEdgeCount,
+      truncated: rendered.truncated === true
     },
-    text: truncateText(lines.join("\n"), request.tokenBudget)
+    text: rendered.text
   };
 }
 
@@ -1283,14 +1521,31 @@ export class GraphifyContextProvider extends ContextGraphProvider {
   }
 
   async queryGraph(query, options = {}) {
+    const mode = normalizeRetrievalMode(options.mode ?? this.config.mode?.current ?? this.config.mode?.default);
+    const configuredModeLimits = this.config.contextGraph?.retrievalLimitsByMode?.[mode];
+    const modeLimits = isNonEmptyObject(configuredModeLimits)
+      ? configuredModeLimits
+      : {
+          seedLimit: this.config.contextGraph?.retrievalSeedLimit,
+          nodeLimit: this.config.contextGraph?.retrievalNodeLimit,
+          edgeLimit: this.config.contextGraph?.retrievalEdgeLimit,
+          detailNodeLimit: this.config.contextGraph?.retrievalDetailNodeLimit,
+          detailEdgeLimit: this.config.contextGraph?.retrievalDetailEdgeLimit
+        };
     return this.#runGraphQuery({
       action: "query",
       query,
-      tokenBudget: options.tokenBudget ?? this.config.contextGraph?.queryTokenBudget ?? DEFAULT_QUERY_TOKEN_BUDGET,
-      depth: options.depth ?? this.config.contextGraph?.queryDepth ?? DEFAULT_QUERY_DEPTH,
-      seedLimit: options.seedLimit ?? this.config.contextGraph?.retrievalSeedLimit ?? DEFAULT_RETRIEVAL_SEED_LIMIT,
-      nodeLimit: options.nodeLimit ?? this.config.contextGraph?.retrievalNodeLimit ?? DEFAULT_RETRIEVAL_NODE_LIMIT,
-      edgeLimit: options.edgeLimit ?? this.config.contextGraph?.retrievalEdgeLimit ?? DEFAULT_RETRIEVAL_EDGE_LIMIT,
+      mode,
+      modeLimits,
+      tokenBudget: options.tokenBudget ?? this.config.contextGraph?.queryTokenBudget ?? retrievalModeProfile(mode).tokenBudget,
+      depth: options.depth ?? this.config.contextGraph?.queryDepthByMode?.[mode] ?? this.config.contextGraph?.queryDepth ?? retrievalModeProfile(mode).depth,
+      seedLimit: options.seedLimit,
+      nodeLimit: options.nodeLimit,
+      edgeLimit: options.edgeLimit,
+      detailNodeLimit: options.detailNodeLimit,
+      detailEdgeLimit: options.detailEdgeLimit,
+      compressionMode: options.compressionMode ?? this.config.contextGraph?.compressionMode,
+      adaptiveCompression: options.adaptiveCompression ?? this.config.contextGraph?.adaptiveCompression,
       showScores: options.showScores ?? this.config.contextGraph?.showRetrievalScores
     });
   }
@@ -1412,13 +1667,22 @@ export class GraphifyContextProvider extends ContextGraphProvider {
   }
 
   async getTaskContext(query, options = {}) {
-    const tokenBudget = options.tokenBudget ?? this.config.contextGraph?.queryTokenBudget ?? DEFAULT_QUERY_TOKEN_BUDGET;
-    const graphBudget = Math.max(300, Math.floor(tokenBudget * 0.65));
+    const mode = normalizeRetrievalMode(options.mode ?? this.config.mode?.current ?? this.config.mode?.default);
+    const profile = retrievalModeProfile(mode);
+    const tokenBudget = options.tokenBudget ?? this.config.contextGraph?.queryTokenBudget ?? profile.tokenBudget;
+    const configuredRatio = Number(this.config.contextGraph?.graphBudgetRatioByMode?.[mode] ?? this.config.contextGraph?.graphBudgetRatio);
+    const graphBudgetRatio = Number.isFinite(configuredRatio) && configuredRatio > 0 && configuredRatio < 1
+      ? configuredRatio
+      : profile.graphBudgetRatio;
+    const graphBudget = Math.max(300, Math.floor(tokenBudget * graphBudgetRatio));
     const memoryBudget = Math.max(200, tokenBudget - graphBudget);
     const graph = fs.existsSync(this.graphPath)
       ? await this.queryGraph(query, {
           tokenBudget: graphBudget,
-          depth: options.depth
+          depth: options.depth,
+          mode,
+          workflow: options.workflow,
+          memoryBudget
         })
       : { ok: false, error: `Graph not found: ${this.graphPath}` };
     const memory = await this.searchExecutionMemory(query, {
@@ -1454,6 +1718,13 @@ export class GraphifyContextProvider extends ContextGraphProvider {
       graph,
       memory,
       text: truncateText(sections.join("\n\n"), tokenBudget),
+      budget: {
+        mode,
+        tokenBudget,
+        graphBudget,
+        memoryBudget,
+        graphBudgetRatio
+      },
       detail: "Retrieved graph context and execution memory."
     };
   }
@@ -1622,12 +1893,18 @@ export async function retrieveContextGraphForTask({ cwd, config, task, workflow,
     };
   }
 
+  const activeMode = normalizeRetrievalMode(mode);
   const tokenBudgetByMode = graphConfig.tokenBudgetByMode ?? {};
   const tokenBudget =
-    tokenBudgetByMode[mode] ??
+    tokenBudgetByMode[activeMode] ??
     graphConfig.promptTokenBudget ??
     graphConfig.queryTokenBudget ??
-    DEFAULT_QUERY_TOKEN_BUDGET;
+    retrievalModeProfile(activeMode).tokenBudget;
+  const depth =
+    graphConfig.promptQueryDepth ??
+    graphConfig.queryDepthByMode?.[activeMode] ??
+    graphConfig.queryDepth ??
+    retrievalModeProfile(activeMode).depth;
   const query = [
     workflow ? `workflow:${workflow}` : "",
     String(task ?? "").trim()
@@ -1636,7 +1913,9 @@ export async function retrieveContextGraphForTask({ cwd, config, task, workflow,
   onProgress?.({ message: "[GRAPH] Retrieving task context.", phase: "graph" });
   const result = await provider.getTaskContext(query, {
     tokenBudget,
-    depth: graphConfig.promptQueryDepth ?? graphConfig.queryDepth ?? DEFAULT_QUERY_DEPTH
+    depth,
+    mode: activeMode,
+    workflow
   });
   if (!result.ok) {
     return {
@@ -1655,6 +1934,8 @@ export async function retrieveContextGraphForTask({ cwd, config, task, workflow,
     text: result.text ?? "",
     status,
     tokenBudget,
+    mode: activeMode,
+    budget: result.budget,
     detail: "Injected task-scoped graph context."
   };
 }
@@ -1677,6 +1958,17 @@ export function summarizeContextGraphConfig(config = {}) {
     queryDepth: graphConfig.queryDepth ?? DEFAULT_QUERY_DEPTH,
     injectIntoPrompts: graphConfig.injectIntoPrompts !== false,
     promptTokenBudget: graphConfig.promptTokenBudget ?? graphConfig.queryTokenBudget ?? DEFAULT_QUERY_TOKEN_BUDGET,
+    tokenBudgetByMode: graphConfig.tokenBudgetByMode ?? {
+      fast: RETRIEVAL_MODE_PROFILES.fast.tokenBudget,
+      balanced: RETRIEVAL_MODE_PROFILES.balanced.tokenBudget,
+      architect: RETRIEVAL_MODE_PROFILES.architect.tokenBudget
+    },
+    queryDepthByMode: graphConfig.queryDepthByMode ?? {
+      fast: RETRIEVAL_MODE_PROFILES.fast.depth,
+      balanced: RETRIEVAL_MODE_PROFILES.balanced.depth,
+      architect: RETRIEVAL_MODE_PROFILES.architect.depth
+    },
+    adaptiveCompression: graphConfig.adaptiveCompression !== false,
     memoryRetrieval: graphConfig.memoryRetrieval !== false,
     maxMemoryEntries: graphConfig.maxMemoryEntries ?? DEFAULT_MEMORY_LIMIT,
     memoryTokenBudget: graphConfig.memoryTokenBudget ?? DEFAULT_MEMORY_TOKEN_BUDGET,

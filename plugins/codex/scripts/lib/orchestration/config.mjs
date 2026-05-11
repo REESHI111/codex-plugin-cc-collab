@@ -78,12 +78,43 @@ export const DEFAULT_ORCHESTRATION_CONFIG = {
     queryDepth: 2,
     injectIntoPrompts: true,
     promptTokenBudget: 2000,
-    promptQueryDepth: 2,
     tokenBudgetByMode: {
       fast: 1200,
       balanced: 2000,
       architect: 4000
     },
+    queryDepthByMode: {
+      fast: 1,
+      balanced: 2,
+      architect: 3
+    },
+    retrievalLimitsByMode: {
+      fast: {
+        seedLimit: 4,
+        nodeLimit: 18,
+        edgeLimit: 24,
+        detailNodeLimit: 6,
+        detailEdgeLimit: 10,
+        compressionMode: "high"
+      },
+      balanced: {
+        seedLimit: 6,
+        nodeLimit: 32,
+        edgeLimit: 48,
+        detailNodeLimit: 12,
+        detailEdgeLimit: 24,
+        compressionMode: "moderate"
+      },
+      architect: {
+        seedLimit: 10,
+        nodeLimit: 80,
+        edgeLimit: 120,
+        detailNodeLimit: 28,
+        detailEdgeLimit: 56,
+        compressionMode: "light"
+      }
+    },
+    adaptiveCompression: true,
     memoryRetrieval: true,
     maxMemoryEntries: 3,
     memoryTokenBudget: 1000,
