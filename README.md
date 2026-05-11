@@ -599,6 +599,7 @@ Current behavior:
 - `/codex:graph update` refreshes the current workspace graph
 - `/codex:graph query`, `explain`, and `path` retrieve compact graph context
 - `/codex:graph context` combines graph relationships with relevant prior orchestration memory
+- `/codex:graph view [overview|files|architecture|hotspots]` renders readable graph navigation layers for subsystem and dependency exploration
 - `/codex:graph stress [query]` runs repeated retrieval checks and reports latency, token overruns, failures, and stability
 - collaborative prompts receive task-scoped graph context when `injectIntoPrompts` is enabled
 - graph retrieval ranks seed nodes by task relevance, applies architecture-aware boosts, expands only bounded neighborhoods, and shows node scores/reasons when `showRetrievalScores=true`
@@ -609,6 +610,7 @@ Current behavior:
 - graph status validates graph.json integrity, pending updates, memory directory state, and lock health
 - collaborative workflow graph updates run through a background sync worker by default
 - execution summaries are saved as markdown memory entries when `saveExecutionMemory` is enabled
+- execution memory entries include duplicate fingerprints, confidence tags, architecture decision extraction, and stale-memory scoring
 
 External edit behavior:
 
@@ -724,6 +726,17 @@ Graph recovery diagnostics:
 ```
 
 Recovery is intentionally local and conservative. It creates missing `graphify-out/` and `graphify-out/memory/orchestration/` directories, clears stale update locks, reports corrupt `graph.json` files without deleting them, and tells you when a forced rebuild is required.
+
+Graph navigation views:
+
+```bash
+/codex:graph view overview
+/codex:graph view files --limit 20
+/codex:graph view architecture
+/codex:graph view hotspots
+```
+
+Views are terminal-first summaries for real development work: subsystem layers, file clusters, architecture node types, and high-degree dependency hotspots. They are designed to make the graph easier to inspect before opening heavier visualization tools.
 
 ## Loop Protection
 
@@ -906,6 +919,8 @@ This collaborative runtime now includes:
 - graph observability traces for context retrieval, prompt injection, and graph sync timing
 - `/codex:graph stress` diagnostics for large-repo retrieval stability checks
 - `/codex:graph recover` diagnostics for stale locks, missing memory folders, and invalid graph workspace state
+- duplicate-resistant execution memory with confidence tags, architecture decisions, stale-memory penalties, and relevance scoring
+- graph navigation views for subsystems, file layers, architecture types, and dependency hotspots
 - execution memory saved under `graphify-out/memory/orchestration/`
 - `/codex:graph context` retrieval that combines graph relationships with prior workflow memory
 - graph update locking, pending-update recovery, stale lock handling, and parallel write-conflict diagnostics
@@ -939,10 +954,10 @@ Use this section to verify what was implemented across the architecture upgrade:
    Collaborative prompts can now receive task-scoped graph context when `contextGraph.enabled=true`, with mode-aware budgets and adaptive compression to avoid token spam.
 
 8. **Execution memory layer**  
-   Workflow summaries are saved under `graphify-out/memory/orchestration/` and retrieved with graph context for future tasks. Execution metrics now also report graph retrieval effectiveness, token savings, hit rate, and usefulness score.
+   Workflow summaries are saved under `graphify-out/memory/orchestration/` and retrieved with graph context for future tasks. Memory now skips duplicates, tracks confidence, extracts architecture decisions, penalizes stale entries, and reports graph retrieval effectiveness, token savings, hit rate, and usefulness score.
 
 9. **Live synchronization safety**  
-   Added graph update locking, pending-update recovery, stale lock handling, failed-update requeueing, parallel write-conflict diagnostics, workflow background sync, session-end sync for external edits, and graph sync timing traces.
+   Added graph update locking, pending-update recovery, stale lock handling, failed-update requeueing, parallel write-conflict diagnostics, workflow background sync, session-end sync for external edits, graph sync timing traces, and terminal graph navigation views.
 
 10. **Bootstrap, config, and packaging hardening**  
     Added `/codex:graph config`, `enable`, `disable`, `init`, `recover`, and `stress`; documented dependency checks, first-run flow, recovery diagnostics, stress diagnostics, and final feature summary; updated plugin/package descriptions for the collaborative memory runtime.

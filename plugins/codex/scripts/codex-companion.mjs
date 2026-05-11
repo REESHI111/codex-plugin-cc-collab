@@ -99,7 +99,7 @@ function printUsage() {
       "  node scripts/codex-companion.mjs pair [--read-only|--full-power] [--claude-plan-file <file>] [--model <model|spark>] [prompt]",
       "  node scripts/codex-companion.mjs debate [--claude-proposal-file <file>] [--model <model|spark>] [prompt]",
       "  node scripts/codex-companion.mjs parallel [--read-only|--full-power] [--agents codex,codex-fast] [prompt]",
-      "  node scripts/codex-companion.mjs graph <status|config|enable|disable|init|recover|update|query|explain|path|context|stress> [args]",
+      "  node scripts/codex-companion.mjs graph <status|config|enable|disable|init|recover|update|query|explain|path|context|view|stress> [args]",
       "  node scripts/codex-companion.mjs ccv [--json]",
       "  node scripts/codex-companion.mjs upgrade [--json]",
       "  node scripts/codex-companion.mjs mode [fast|architect|balanced] [--json]",
@@ -849,7 +849,7 @@ function renderGraphPayload(payload) {
     return `${lines.join("\n").trimEnd()}\n`;
   }
 
-  if (payload.command === "query" || payload.command === "context") {
+  if (payload.command === "query" || payload.command === "context" || payload.command === "view") {
     lines.push(payload.result.text ?? "");
   } else if (payload.command === "explain") {
     const node = payload.result.node ?? {};
@@ -1388,7 +1388,7 @@ async function handleParallel(argv) {
 
 async function handleGraph(argv) {
   const { options, positionals } = parseCommandInput(argv, {
-    valueOptions: ["cwd", "token-budget", "depth", "iterations", "mode"],
+    valueOptions: ["cwd", "token-budget", "depth", "iterations", "mode", "limit"],
     booleanOptions: ["json", "force", "install"]
   });
 
@@ -1503,6 +1503,15 @@ async function handleGraph(argv) {
         depth: options.depth
       })
     };
+  } else if (command === "view") {
+    const view = rest[0] ?? "overview";
+    payload = {
+      command,
+      view,
+      result: await provider.graphView(view, {
+        limit: options.limit
+      })
+    };
   } else if (command === "stress") {
     const query = rest.join(" ").trim();
     payload = {
@@ -1546,7 +1555,7 @@ async function handleGraph(argv) {
       })
     };
   } else {
-    throw new Error(`Unknown graph command "${command}". Use status, config, enable, disable, init, recover, update, query, explain, path, context, or stress.`);
+    throw new Error(`Unknown graph command "${command}". Use status, config, enable, disable, init, recover, update, query, explain, path, context, view, or stress.`);
   }
 
   outputCommandResult(payload, renderGraphPayload(payload), options.json);

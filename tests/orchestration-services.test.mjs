@@ -162,7 +162,7 @@ test("Graphify provider resolves workspace graph paths", async () => {
   assert.equal(status.memoryDir, `${cwd}/graphify-out/memory/orchestration`);
   assert.equal(status.promptInjection, true);
   assert.equal(status.memoryRetrieval, true);
-  assert.equal(status.workspace.outputDirExists, false);
+  assert.equal(status.workspace.graphPath, `${cwd}/graphify-out/graph.json`);
   assert.equal(status.lockStatus, "clear");
 });
 
@@ -432,12 +432,67 @@ test("Graphify provider saves and retrieves orchestration memory", async () => {
   const context = await provider.getTaskContext("auth retries", { tokenBudget: 900 });
 
   assert.equal(saved.ok, true);
+  assert.equal(saved.confidence, "high");
+  assert.ok(saved.fingerprint);
+  assert.ok(saved.decisions.length > 0);
   assert.equal(memory.ok, true);
   assert.equal(memory.entries.length, 1);
+  assert.equal(memory.entries[0].confidence, "high");
+  assert.equal(memory.entries[0].stale, false);
   assert.match(memory.entries[0].text, /fix auth client retries/);
+  assert.match(memory.entries[0].text, /Architecture Decisions:/);
   assert.equal(context.ok, true);
   assert.match(context.text, /## Graph Context/);
   assert.match(context.text, /## Execution Memory/);
+});
+
+test("Graphify provider prevents duplicate orchestration memory", async () => {
+  const cwd = makeTempDir();
+  fs.mkdirSync(path.join(cwd, "graphify-out"), { recursive: true });
+  const provider = new GraphifyContextProvider({
+    cwd,
+    config: {
+      contextGraph: {
+        enabled: true,
+        graphPath: "graphify-out/graph.json"
+      }
+    }
+  });
+  const entry = {
+    workflow: "pair",
+    mode: "balanced",
+    task: "choose provider adapter",
+    summary: "Decided to use a provider adapter for graph memory.",
+    filesModified: ["src/provider.ts"]
+  };
+
+  const first = await provider.saveExecutionMemory(entry);
+  const second = await provider.saveExecutionMemory(entry);
+
+  assert.equal(first.ok, true);
+  assert.equal(second.duplicate, true);
+  assert.equal(second.filePath, first.filePath);
+});
+
+test("Graphify provider renders graph views for architecture navigation", async () => {
+  const provider = new GraphifyContextProvider({
+    cwd: process.cwd(),
+    config: {
+      contextGraph: {
+        enabled: true,
+        graphPath: "graphify-7/worked/httpx/graph.json"
+      }
+    }
+  });
+
+  const overview = await provider.graphView("overview", { limit: 6 });
+  const hotspots = await provider.graphView("hotspots", { limit: 5 });
+
+  assert.equal(overview.ok, true);
+  assert.match(overview.text, /Graph view: overview/);
+  assert.match(overview.text, /Subsystems:/);
+  assert.equal(hotspots.ok, true);
+  assert.match(hotspots.text, /Dependency Hotspots:/);
 });
 
 test("Graphify provider records pending updates when graph lock is busy", async () => {

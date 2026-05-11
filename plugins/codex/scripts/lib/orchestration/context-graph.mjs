@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
+import crypto from "node:crypto";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
@@ -1015,6 +1016,63 @@ function scoreText(text, terms) {
   return score;
 }
 
+function stableFingerprint(text) {
+  return crypto.createHash("sha256").update(String(text ?? "").trim().toLowerCase()).digest("hex").slice(0, 16);
+}
+
+function parseMemoryMetadata(content) {
+  const match = String(content ?? "").match(/^---\r?\n([\s\S]*?)\r?\n---/);
+  if (!match) {
+    return {};
+  }
+  const metadata = {};
+  for (const line of match[1].split(/\r?\n/)) {
+    const [key, ...parts] = line.split(":");
+    if (!key || parts.length === 0) {
+      continue;
+    }
+    metadata[key.trim()] = parts.join(":").trim();
+  }
+  return metadata;
+}
+
+function memoryConfidence(entry = {}) {
+  const files = unique(entry.filesModified ?? entry.touchedFiles ?? []);
+  const commands = unique(entry.commandsExecuted ?? entry.shellCommands ?? []);
+  const summary = String(entry.summary ?? "").trim();
+  let score = 35;
+  if (summary.length > 40) score += 20;
+  if (files.length) score += 20;
+  if (commands.length) score += 10;
+  if (String(entry.workflow ?? "").trim()) score += 10;
+  return score >= 75 ? "high" : score >= 55 ? "medium" : "low";
+}
+
+function extractArchitectureDecisions(entry = {}) {
+  const text = [
+    entry.task,
+    entry.summary,
+    ...(entry.reasoningSummary ?? [])
+  ].filter(Boolean).join("\n");
+  const decisions = [];
+  for (const line of String(text).split(/\r?\n/)) {
+    const trimmed = line.replace(/^[-*]\s*/, "").trim();
+    if (/\b(use|choose|selected|decided|prefer|architecture|adapter|provider|workflow|memory|graph|client|service|runtime)\b/i.test(trimmed)) {
+      decisions.push(trimmed);
+    }
+  }
+  return unique(decisions).slice(0, 5);
+}
+
+function memoryStaleness(mtimeMs, staleDays = 45) {
+  const ageDays = Math.max(0, (Date.now() - Number(mtimeMs || 0)) / 86_400_000);
+  return {
+    ageDays: Math.round(ageDays),
+    stale: ageDays > staleDays,
+    penalty: ageDays > staleDays ? Math.min(20, Math.floor((ageDays - staleDays) / 7) + 5) : 0
+  };
+}
+
 function recencyBoost(mtimeMs) {
   const ageDays = Math.max(0, (Date.now() - Number(mtimeMs || 0)) / 86_400_000);
   if (ageDays <= 1) return 8;
@@ -1186,6 +1244,100 @@ function runJsGraphQuery(graphPath, request) {
   };
 }
 
+function graphSubsystem(filePath) {
+  const parts = String(filePath ?? "").split(/[\\/]/).filter(Boolean);
+  if (parts.length <= 1) {
+    return parts[0] ?? "(root)";
+  }
+  if (["src", "lib", "app", "packages", "plugins", "tests"].includes(parts[0]) && parts[1]) {
+    return `${parts[0]}/${parts[1]}`;
+  }
+  return parts[0];
+}
+
+function graphNodeKind(node = {}) {
+  return String(node.node_type ?? node.file_type ?? node.kind ?? node.type ?? "node");
+}
+
+function renderGraphView(graphPath, options = {}) {
+  const graph = normalizeGraphData(readJsonIfExists(graphPath) ?? {});
+  const view = String(options.view ?? "overview").toLowerCase();
+  const limit = Math.max(5, Math.min(50, Number(options.limit ?? 12) || 12));
+  const degreeByNode = new Map();
+  for (const edge of graph.edges) {
+    degreeByNode.set(edge.source, (degreeByNode.get(edge.source) ?? 0) + 1);
+    degreeByNode.set(edge.target, (degreeByNode.get(edge.target) ?? 0) + 1);
+  }
+  const subsystemStats = new Map();
+  for (const node of graph.nodes) {
+    const subsystem = graphSubsystem(node.source_file);
+    const current = subsystemStats.get(subsystem) ?? { subsystem, nodes: 0, files: new Set(), edges: 0 };
+    current.nodes += 1;
+    if (node.source_file) current.files.add(node.source_file);
+    current.edges += degreeByNode.get(node.id) ?? 0;
+    subsystemStats.set(subsystem, current);
+  }
+  const subsystems = [...subsystemStats.values()]
+    .sort((left, right) => right.nodes - left.nodes || right.edges - left.edges)
+    .slice(0, limit);
+  const kindCounts = new Map();
+  for (const node of graph.nodes) {
+    const kind = graphNodeKind(node);
+    kindCounts.set(kind, (kindCounts.get(kind) ?? 0) + 1);
+  }
+  const hotspots = graph.nodes
+    .map((node) => ({ node, degree: degreeByNode.get(node.id) ?? 0 }))
+    .sort((left, right) => right.degree - left.degree || compactNodeLabel(left.node).localeCompare(compactNodeLabel(right.node)))
+    .slice(0, limit);
+  const lines = [
+    `Graph view: ${view}`,
+    `Nodes: ${graph.nodes.length}`,
+    `Edges: ${graph.edges.length}`,
+    ""
+  ];
+
+  if (view === "files") {
+    lines.push("File/Subystem Layers:");
+    for (const item of subsystems) {
+      lines.push(`- ${item.subsystem}: ${item.nodes} nodes, ${item.files.size} files, ${item.edges} links`);
+    }
+  } else if (view === "hotspots") {
+    lines.push("Dependency Hotspots:");
+    for (const item of hotspots) {
+      lines.push(`- ${compactNodeLabel(item.node)}: ${item.degree} links${compactSourceFile(item.node) ? ` (${compactSourceFile(item.node)})` : ""}`);
+    }
+  } else if (view === "architecture") {
+    lines.push("Architecture Node Types:");
+    for (const [kind, count] of [...kindCounts.entries()].sort((left, right) => right[1] - left[1]).slice(0, limit)) {
+      lines.push(`- ${kind}: ${count}`);
+    }
+    lines.push("", "Top Architecture Areas:");
+    for (const item of subsystems.slice(0, Math.min(8, limit))) {
+      lines.push(`- ${item.subsystem}: ${item.nodes} nodes`);
+    }
+  } else {
+    lines.push("Subsystems:");
+    for (const item of subsystems.slice(0, Math.min(8, limit))) {
+      lines.push(`- ${item.subsystem}: ${item.nodes} nodes, ${item.files.size} files`);
+    }
+    lines.push("", "Hotspots:");
+    for (const item of hotspots.slice(0, Math.min(8, limit))) {
+      lines.push(`- ${compactNodeLabel(item.node)}: ${item.degree} links`);
+    }
+  }
+
+  return {
+    ok: true,
+    action: "view",
+    view,
+    nodeCount: graph.nodes.length,
+    edgeCount: graph.edges.length,
+    subsystemCount: subsystemStats.size,
+    hotspotCount: hotspots.length,
+    text: lines.join("\n")
+  };
+}
+
 export class ContextGraphProvider {
   constructor({ cwd, config = {} } = {}) {
     this.cwd = cwd ?? process.cwd();
@@ -1258,6 +1410,15 @@ export class ContextGraphProvider {
   async getTaskContext() {
     return {
       ok: false,
+      text: "",
+      detail: "No context graph provider configured."
+    };
+  }
+
+  async graphView() {
+    return {
+      ok: false,
+      skipped: true,
       text: "",
       detail: "No context graph provider configured."
     };
@@ -1840,14 +2001,44 @@ export class GraphifyContextProvider extends ContextGraphProvider {
     fs.mkdirSync(memoryDir, { recursive: true });
     const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
     const workflow = String(entry.workflow ?? "workflow").replace(/[^a-z0-9-]+/gi, "-").toLowerCase();
-    const filePath = path.join(memoryDir, `${timestamp}-${workflow}.md`);
     const files = unique(entry.filesModified ?? entry.touchedFiles ?? []);
     const commands = unique(entry.commandsExecuted ?? entry.shellCommands ?? []);
+    const decisions = extractArchitectureDecisions(entry);
+    const confidence = memoryConfidence(entry);
+    const fingerprint = stableFingerprint([
+      entry.workflow ?? "unknown",
+      entry.mode ?? "balanced",
+      String(entry.task ?? "").trim(),
+      String(entry.summary ?? "").trim(),
+      files.join("|")
+    ].join("\n"));
+    const duplicate = fs.readdirSync(memoryDir)
+      .filter((name) => name.endsWith(".md"))
+      .map((name) => {
+        const filePath = path.join(memoryDir, name);
+        const metadata = parseMemoryMetadata(safeReadText(filePath, 4000));
+        return { filePath, metadata };
+      })
+      .find((item) => item.metadata.fingerprint === fingerprint);
+    if (duplicate && this.config.contextGraph?.allowDuplicateMemory !== true) {
+      return {
+        ok: true,
+        skipped: true,
+        duplicate: true,
+        filePath: duplicate.filePath,
+        fingerprint,
+        confidence,
+        detail: `Skipped duplicate orchestration memory already stored at ${duplicate.filePath}.`
+      };
+    }
+    const filePath = path.join(memoryDir, `${timestamp}-${workflow}.md`);
     const body = [
       "---",
       "type: orchestration-memory",
       `workflow: ${entry.workflow ?? "unknown"}`,
       `mode: ${entry.mode ?? "balanced"}`,
+      `confidence: ${confidence}`,
+      `fingerprint: ${fingerprint}`,
       `created_at: ${new Date().toISOString()}`,
       "---",
       "",
@@ -1860,6 +2051,9 @@ export class GraphifyContextProvider extends ContextGraphProvider {
       "Files Modified:",
       ...(files.length ? files.map((file) => `- ${file}`) : ["- none"]),
       "",
+      "Architecture Decisions:",
+      ...(decisions.length ? decisions.map((decision) => `- ${decision}`) : ["- none"]),
+      "",
       "Commands Executed:",
       ...(commands.length ? commands.map((command) => `- ${command}`) : ["- none"])
     ].join("\n");
@@ -1868,6 +2062,9 @@ export class GraphifyContextProvider extends ContextGraphProvider {
       ok: true,
       skipped: false,
       filePath,
+      fingerprint,
+      confidence,
+      decisions,
       detail: `Saved orchestration memory to ${filePath}.`
     };
   }
@@ -1892,19 +2089,25 @@ export class GraphifyContextProvider extends ContextGraphProvider {
     const terms = queryTerms(query);
     const limit = Math.max(0, Number(options.limit ?? this.config.contextGraph?.maxMemoryEntries ?? DEFAULT_MEMORY_LIMIT) || DEFAULT_MEMORY_LIMIT);
     const tokenBudget = options.tokenBudget ?? this.config.contextGraph?.memoryTokenBudget ?? DEFAULT_MEMORY_TOKEN_BUDGET;
+    const staleDays = Number(this.config.contextGraph?.staleMemoryDays ?? 45) || 45;
     const entries = fs.readdirSync(this.memoryDir)
       .filter((name) => name.endsWith(".md"))
       .map((name) => {
         const filePath = path.join(this.memoryDir, name);
         const content = safeReadText(filePath);
         const stat = fs.statSync(filePath);
+        const metadata = parseMemoryMetadata(content);
+        const staleness = memoryStaleness(stat.mtimeMs, staleDays);
+        const confidenceBoost = metadata.confidence === "high" ? 8 : metadata.confidence === "medium" ? 4 : 0;
         return {
           filePath,
           name,
+          metadata,
           content,
           body: stripFrontmatter(content),
           mtimeMs: stat.mtimeMs,
-          score: scoreText(`${name}\n${content}`, terms) + recencyBoost(stat.mtimeMs)
+          staleness,
+          score: scoreText(`${name}\n${content}`, terms) + recencyBoost(stat.mtimeMs) + confidenceBoost - staleness.penalty
         };
       })
       .filter((entry) => entry.score > 0 || terms.length === 0)
@@ -1914,6 +2117,10 @@ export class GraphifyContextProvider extends ContextGraphProvider {
         filePath: entry.filePath,
         name: entry.name,
         score: entry.score,
+        confidence: entry.metadata.confidence ?? "unknown",
+        stale: entry.staleness.stale,
+        ageDays: entry.staleness.ageDays,
+        fingerprint: entry.metadata.fingerprint ?? null,
         text: truncateText(entry.body, Math.max(200, Math.floor(tokenBudget / Math.max(1, limit))))
       }));
 
@@ -1994,6 +2201,20 @@ export class GraphifyContextProvider extends ContextGraphProvider {
       },
       detail: "Retrieved graph context and execution memory."
     };
+  }
+
+  async graphView(view = "overview", options = {}) {
+    if (!fs.existsSync(this.graphPath)) {
+      return {
+        ok: false,
+        error: `Graph not found: ${this.graphPath}`,
+        text: ""
+      };
+    }
+    return renderGraphView(this.graphPath, {
+      view,
+      limit: options.limit
+    });
   }
 
   #recordPendingUpdate(files = [], reason = "workflow") {
