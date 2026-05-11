@@ -500,11 +500,12 @@ Add `codex-companion.config.json` at the workspace root, or `.codex-companion/co
     "lockUpdates": true,
     "staleLockMs": 600000,
     "recordPendingUpdates": true,
+    "recordGraphEvents": true,
+    "graphEventLimit": 200,
     "queryTokenBudget": 2000,
     "queryDepth": 2,
     "injectIntoPrompts": true,
     "promptTokenBudget": 2000,
-    "promptQueryDepth": 2,
     "tokenBudgetByMode": {
       "fast": 1200,
       "balanced": 2000,
@@ -600,6 +601,7 @@ Current behavior:
 - `/codex:graph query`, `explain`, and `path` retrieve compact graph context
 - `/codex:graph context` combines graph relationships with relevant prior orchestration memory
 - `/codex:graph view [overview|files|architecture|hotspots]` renders readable graph navigation layers for subsystem and dependency exploration
+- `/codex:graph timeline [event-type]` shows recent live graph events from sync, memory, and workflow activity
 - `/codex:graph stress [query]` runs repeated retrieval checks and reports latency, token overruns, failures, and stability
 - collaborative prompts receive task-scoped graph context when `injectIntoPrompts` is enabled
 - graph retrieval ranks seed nodes by task relevance, applies architecture-aware boosts, expands only bounded neighborhoods, and shows node scores/reasons when `showRetrievalScores=true`
@@ -611,6 +613,7 @@ Current behavior:
 - collaborative workflow graph updates run through a background sync worker by default
 - execution summaries are saved as markdown memory entries when `saveExecutionMemory` is enabled
 - execution memory entries include duplicate fingerprints, confidence tags, architecture decision extraction, and stale-memory scoring
+- graph sync and memory writes append a bounded live event timeline to `graphify-out/graph-events.json`
 
 External edit behavior:
 
@@ -737,6 +740,16 @@ Graph navigation views:
 ```
 
 Views are terminal-first summaries for real development work: subsystem layers, file clusters, architecture node types, and high-degree dependency hotspots. They are designed to make the graph easier to inspect before opening heavier visualization tools.
+
+Live context timeline:
+
+```bash
+/codex:graph timeline
+/codex:graph timeline memory-saved
+/codex:graph timeline sync-queued --limit 20
+```
+
+The timeline records lightweight graph events from workflow syncs, background queueing, failed updates, and memory saves. It gives developers a quick way to see how the context layer evolved during a long session without opening Graphify internals.
 
 ## Loop Protection
 
@@ -921,6 +934,7 @@ This collaborative runtime now includes:
 - `/codex:graph recover` diagnostics for stale locks, missing memory folders, and invalid graph workspace state
 - duplicate-resistant execution memory with confidence tags, architecture decisions, stale-memory penalties, and relevance scoring
 - graph navigation views for subsystems, file layers, architecture types, and dependency hotspots
+- live graph event timeline through `/codex:graph timeline`
 - execution memory saved under `graphify-out/memory/orchestration/`
 - `/codex:graph context` retrieval that combines graph relationships with prior workflow memory
 - graph update locking, pending-update recovery, stale lock handling, and parallel write-conflict diagnostics
@@ -932,32 +946,32 @@ This collaborative runtime now includes:
 
 Use this section to verify what was implemented across the architecture upgrade:
 
-1. **Collaborative orchestration commands**  
+1. **Collaborative orchestration commands**
    Added `/codex:pair`, `/codex:codex-inline`, `/codex:debate`, and `/codex:parallel` while preserving the existing plugin runtime.
 
-2. **Executor abstraction and routing**  
+2. **Executor abstraction and routing**
    Added provider-neutral executor structure around Claude/Codex roles so future providers can be added without rewriting workflows.
 
-3. **Permission and execution safety**  
+3. **Permission and execution safety**
    Added safe write defaults, permission diagnostics, full-power opt-in, and blocked-write recovery guidance.
 
-4. **Metrics, modes, and loop protection**  
+4. **Metrics, modes, and loop protection**
    Added token/cost/runtime/file/command metrics, `/codex:mode`, command sanitization, timeout/retry/depth guards, and `/codex:status` runtime diagnostics.
 
-5. **Graphify architecture integration**  
+5. **Graphify architecture integration**
    Added a modular Graphify context provider instead of tightly coupling orchestration logic to Graphify internals.
 
-6. **Graph commands and context retrieval**  
+6. **Graph commands and context retrieval**
    Added `/codex:graph status`, `query`, `explain`, `path`, and `context` with relevance-ranked, bounded graph output.
 
-7. **Prompt-time graph context injection**  
+7. **Prompt-time graph context injection**
    Collaborative prompts can now receive task-scoped graph context when `contextGraph.enabled=true`, with mode-aware budgets and adaptive compression to avoid token spam.
 
-8. **Execution memory layer**  
+8. **Execution memory layer**
    Workflow summaries are saved under `graphify-out/memory/orchestration/` and retrieved with graph context for future tasks. Memory now skips duplicates, tracks confidence, extracts architecture decisions, penalizes stale entries, and reports graph retrieval effectiveness, token savings, hit rate, and usefulness score.
 
-9. **Live synchronization safety**  
-   Added graph update locking, pending-update recovery, stale lock handling, failed-update requeueing, parallel write-conflict diagnostics, workflow background sync, session-end sync for external edits, graph sync timing traces, and terminal graph navigation views.
+9. **Live context visualization**
+   Added graph update locking, pending-update recovery, stale lock handling, failed-update requeueing, parallel write-conflict diagnostics, workflow background sync, session-end sync for external edits, graph sync timing traces, terminal graph navigation views, and `/codex:graph timeline` for live context evolution.
 
-10. **Bootstrap, config, and packaging hardening**  
-    Added `/codex:graph config`, `enable`, `disable`, `init`, `recover`, and `stress`; documented dependency checks, first-run flow, recovery diagnostics, stress diagnostics, and final feature summary; updated plugin/package descriptions for the collaborative memory runtime.
+10. **Final refinement and validation**
+    Cleaned up retrieval/config docs, added `/codex:graph config`, `enable`, `disable`, `init`, `recover`, `stress`, and `timeline`; documented dependency checks, first-run flow, recovery diagnostics, stress diagnostics, live event timelines, and final feature summary; updated plugin/package descriptions for the collaborative memory runtime.

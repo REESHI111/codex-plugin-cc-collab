@@ -99,7 +99,7 @@ function printUsage() {
       "  node scripts/codex-companion.mjs pair [--read-only|--full-power] [--claude-plan-file <file>] [--model <model|spark>] [prompt]",
       "  node scripts/codex-companion.mjs debate [--claude-proposal-file <file>] [--model <model|spark>] [prompt]",
       "  node scripts/codex-companion.mjs parallel [--read-only|--full-power] [--agents codex,codex-fast] [prompt]",
-      "  node scripts/codex-companion.mjs graph <status|config|enable|disable|init|recover|update|query|explain|path|context|view|stress> [args]",
+      "  node scripts/codex-companion.mjs graph <status|config|enable|disable|init|recover|update|query|explain|path|context|view|timeline|stress> [args]",
       "  node scripts/codex-companion.mjs ccv [--json]",
       "  node scripts/codex-companion.mjs upgrade [--json]",
       "  node scripts/codex-companion.mjs mode [fast|architect|balanced] [--json]",
@@ -849,7 +849,7 @@ function renderGraphPayload(payload) {
     return `${lines.join("\n").trimEnd()}\n`;
   }
 
-  if (payload.command === "query" || payload.command === "context" || payload.command === "view") {
+  if (payload.command === "query" || payload.command === "context" || payload.command === "view" || payload.command === "timeline") {
     lines.push(payload.result.text ?? "");
   } else if (payload.command === "explain") {
     const node = payload.result.node ?? {};
@@ -1512,6 +1512,14 @@ async function handleGraph(argv) {
         limit: options.limit
       })
     };
+  } else if (command === "timeline") {
+    payload = {
+      command,
+      result: await provider.graphTimeline({
+        limit: options.limit,
+        type: rest[0]
+      })
+    };
   } else if (command === "stress") {
     const query = rest.join(" ").trim();
     payload = {
@@ -1555,7 +1563,7 @@ async function handleGraph(argv) {
       })
     };
   } else {
-    throw new Error(`Unknown graph command "${command}". Use status, config, enable, disable, init, recover, update, query, explain, path, context, view, or stress.`);
+    throw new Error(`Unknown graph command "${command}". Use status, config, enable, disable, init, recover, update, query, explain, path, context, view, timeline, or stress.`);
   }
 
   outputCommandResult(payload, renderGraphPayload(payload), options.json);

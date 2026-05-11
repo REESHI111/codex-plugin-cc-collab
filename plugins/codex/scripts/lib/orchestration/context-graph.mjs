@@ -18,6 +18,7 @@ const DEFAULT_RETRIEVAL_DETAIL_EDGE_LIMIT = 24;
 const DEFAULT_MEMORY_TOKEN_BUDGET = 1000;
 const DEFAULT_MEMORY_LIMIT = 3;
 const DEFAULT_LOCK_STALE_MS = 10 * 60 * 1000;
+const DEFAULT_GRAPH_EVENT_LIMIT = 200;
 const RETRIEVAL_MODE_PROFILES = {
   fast: {
     tokenBudget: 1200,
@@ -74,6 +75,8 @@ export function buildRecommendedContextGraphConfig(overrides = {}) {
     lockUpdates: true,
     staleLockMs: DEFAULT_LOCK_STALE_MS,
     recordPendingUpdates: true,
+    recordGraphEvents: true,
+    graphEventLimit: DEFAULT_GRAPH_EVENT_LIMIT,
     queryTokenBudget: DEFAULT_QUERY_TOKEN_BUDGET,
     queryDepth: DEFAULT_QUERY_DEPTH,
     retrievalSeedLimit: DEFAULT_RETRIEVAL_SEED_LIMIT,
@@ -1424,6 +1427,16 @@ export class ContextGraphProvider {
     };
   }
 
+  async graphTimeline() {
+    return {
+      ok: false,
+      skipped: true,
+      events: [],
+      text: "",
+      detail: "No context graph provider configured."
+    };
+  }
+
   async bootstrap() {
     return {
       ok: false,
@@ -1470,6 +1483,10 @@ export class GraphifyContextProvider extends ContextGraphProvider {
     return path.join(this.outDir, "pending-updates.json");
   }
 
+  get eventsPath() {
+    return path.join(this.outDir, "graph-events.json");
+  }
+
   get command() {
     return configuredGraphifyCommand(this.config);
   }
@@ -1513,6 +1530,8 @@ export class GraphifyContextProvider extends ContextGraphProvider {
       pendingUpdatesPath: this.pendingUpdatesPath,
       pendingFileCount: unique(pending.files ?? []).length,
       pendingEventCount: Array.isArray(pending.events) ? pending.events.length : 0,
+      eventsPath: this.eventsPath,
+      graphEventCount: readJsonSafe(this.eventsPath, { events: [] }).events?.length ?? 0,
       lockPath: this.lockPath,
       lockExists,
       lockAgeMs,
@@ -1811,6 +1830,13 @@ export class GraphifyContextProvider extends ContextGraphProvider {
     const requestedFullWorkspace = options.fullWorkspace === true || files.some((filePath) => String(filePath) === ".");
     let changedFiles = requestedFullWorkspace ? ["."] : normalizeChangedFiles(this.cwd, files);
     if (changedFiles.length === 0 && !requestedFullWorkspace) {
+      this.#recordGraphEvent({
+        type: "sync-skipped",
+        reason: options.reason ?? "workflow",
+        changedFileCount: 0,
+        durationMs: 0,
+        detail: "No changed files were reported."
+      });
       return {
         ok: true,
         skipped: true,
@@ -1828,6 +1854,13 @@ export class GraphifyContextProvider extends ContextGraphProvider {
       });
       if (!lock.acquired) {
         this.#recordPendingUpdate(changedFiles, options.reason ?? "workflow");
+        this.#recordGraphEvent({
+          type: "sync-pending",
+          reason: options.reason ?? "workflow",
+          files: changedFiles,
+          changedFileCount: changedFiles.length,
+          lockBusy: true
+        });
         return {
           ok: false,
           skipped: true,
@@ -1859,6 +1892,21 @@ export class GraphifyContextProvider extends ContextGraphProvider {
       if (!ok) {
         this.#recordPendingUpdate(changedFiles, options.reason ?? "failed-update");
       }
+      const completedTrace = finishTrace(trace, {
+        ok,
+        changedFileCount: changedFiles.length,
+        pendingFileCount: pending.files.length,
+        status: result.status
+      });
+      this.#recordGraphEvent({
+        type: ok ? "sync-complete" : "sync-failed",
+        reason: options.reason ?? "workflow",
+        files: changedFiles,
+        changedFileCount: changedFiles.length,
+        pendingFileCount: pending.files.length,
+        durationMs: completedTrace.durationMs,
+        status: result.status
+      });
       return {
         ok,
         skipped: false,
@@ -1868,12 +1916,7 @@ export class GraphifyContextProvider extends ContextGraphProvider {
         status: result.status,
         stdout: result.stdout,
         stderr: result.stderr,
-        trace: finishTrace(trace, {
-          ok,
-          changedFileCount: changedFiles.length,
-          pendingFileCount: pending.files.length,
-          status: result.status
-        }),
+        trace: completedTrace,
         detail: ok
           ? `Updated context graph for ${changedFiles.length} changed file(s).`
           : result.error?.message ?? result.stderr.trim() ?? result.stdout.trim() ?? `graphify exited ${result.status}`
@@ -1901,6 +1944,13 @@ export class GraphifyContextProvider extends ContextGraphProvider {
     const requestedFullWorkspace = options.fullWorkspace === true || files.some((filePath) => String(filePath) === ".");
     const changedFiles = requestedFullWorkspace ? ["."] : normalizeChangedFiles(this.cwd, files);
     if (changedFiles.length === 0 && !requestedFullWorkspace) {
+      this.#recordGraphEvent({
+        type: "sync-queue-skipped",
+        reason: options.reason ?? "background-sync",
+        changedFileCount: 0,
+        durationMs: 0,
+        detail: "No changed files were reported."
+      });
       return {
         ok: true,
         skipped: true,
@@ -1912,6 +1962,13 @@ export class GraphifyContextProvider extends ContextGraphProvider {
     this.#recordPendingUpdate(changedFiles, options.reason ?? "background-sync");
     const scriptPath = options.workerScriptPath ?? process.argv[1];
     if (!scriptPath || !fs.existsSync(scriptPath)) {
+      this.#recordGraphEvent({
+        type: "sync-queued",
+        reason: options.reason ?? "background-sync",
+        files: changedFiles,
+        changedFileCount: changedFiles.length,
+        workerStarted: false
+      });
       return {
         ok: false,
         queued: true,
@@ -1929,13 +1986,23 @@ export class GraphifyContextProvider extends ContextGraphProvider {
       windowsHide: true
     });
     child.unref();
+    const completedTrace = finishTrace(trace, { ok: true, queued: true, workerStarted: true, changedFileCount: changedFiles.length });
+    this.#recordGraphEvent({
+      type: "sync-queued",
+      reason: options.reason ?? "background-sync",
+      files: changedFiles,
+      changedFileCount: changedFiles.length,
+      workerStarted: true,
+      pid: child.pid ?? null,
+      durationMs: completedTrace.durationMs
+    });
     return {
       ok: true,
       queued: true,
       workerStarted: true,
       pid: child.pid ?? null,
       changedFiles,
-      trace: finishTrace(trace, { ok: true, queued: true, workerStarted: true, changedFileCount: changedFiles.length }),
+      trace: completedTrace,
       detail: `Queued background context graph sync for ${changedFiles.length} changed file(s).`
     };
   }
@@ -2058,6 +2125,17 @@ export class GraphifyContextProvider extends ContextGraphProvider {
       ...(commands.length ? commands.map((command) => `- ${command}`) : ["- none"])
     ].join("\n");
     fs.writeFileSync(filePath, `${body.trimEnd()}\n`, "utf8");
+    this.#recordGraphEvent({
+      type: "memory-saved",
+      workflow: entry.workflow ?? "unknown",
+      mode: entry.mode ?? "balanced",
+      memory: path.basename(filePath),
+      files,
+      changedFileCount: files.length,
+      confidence,
+      decisionCount: decisions.length,
+      fingerprint
+    });
     return {
       ok: true,
       skipped: false,
@@ -2217,6 +2295,36 @@ export class GraphifyContextProvider extends ContextGraphProvider {
     });
   }
 
+  async graphTimeline(options = {}) {
+    const limit = Math.max(1, Math.min(100, Number(options.limit ?? 20) || 20));
+    const type = options.type ? String(options.type) : null;
+    const data = readJsonSafe(this.eventsPath, { events: [] });
+    const events = (Array.isArray(data.events) ? data.events : [])
+      .filter((event) => !type || event.type === type)
+      .slice(-limit);
+    const lines = [
+      "Graph live context timeline",
+      `Events: ${events.length}`,
+      ""
+    ];
+    if (events.length === 0) {
+      lines.push("No graph events recorded yet.");
+    } else {
+      for (const event of events) {
+        const files = Number(event.changedFileCount ?? event.files?.length ?? 0);
+        const duration = Number.isFinite(Number(event.durationMs)) ? ` ${Math.round(Number(event.durationMs))}ms` : "";
+        const subject = event.workflow ?? event.reason ?? event.query ?? event.memory ?? "";
+        lines.push(`- ${event.createdAt} ${event.type}${duration}${subject ? ` - ${subject}` : ""}${files ? ` (${files} files)` : ""}`);
+      }
+    }
+    return {
+      ok: true,
+      action: "timeline",
+      events,
+      text: lines.join("\n")
+    };
+  }
+
   #recordPendingUpdate(files = [], reason = "workflow") {
     if (this.config.contextGraph?.recordPendingUpdates === false) {
       return;
@@ -2240,6 +2348,30 @@ export class GraphifyContextProvider extends ContextGraphProvider {
       ].slice(-50)
     };
     writeJsonAtomic(this.pendingUpdatesPath, next);
+  }
+
+  #recordGraphEvent(event = {}) {
+    if (this.config.contextGraph?.recordGraphEvents === false) {
+      return null;
+    }
+    fs.mkdirSync(this.outDir, { recursive: true });
+    const existing = readJsonSafe(this.eventsPath, {
+      version: 1,
+      events: []
+    });
+    const limit = Math.max(20, Number(this.config.contextGraph?.graphEventLimit ?? DEFAULT_GRAPH_EVENT_LIMIT) || DEFAULT_GRAPH_EVENT_LIMIT);
+    const nextEvent = {
+      id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      createdAt: nowIso(),
+      ...event
+    };
+    const next = {
+      version: 1,
+      updatedAt: nowIso(),
+      events: [...(existing.events ?? []), nextEvent].slice(-limit)
+    };
+    writeJsonAtomic(this.eventsPath, next);
+    return nextEvent;
   }
 
   #drainPendingUpdates() {
@@ -2591,6 +2723,8 @@ export function summarizeContextGraphConfig(config = {}) {
     lockUpdates: graphConfig.lockUpdates !== false,
     staleLockMs: graphConfig.staleLockMs ?? DEFAULT_LOCK_STALE_MS,
     recordPendingUpdates: graphConfig.recordPendingUpdates !== false,
+    recordGraphEvents: graphConfig.recordGraphEvents !== false,
+    graphEventLimit: graphConfig.graphEventLimit ?? DEFAULT_GRAPH_EVENT_LIMIT,
     queryTokenBudget: graphConfig.queryTokenBudget ?? DEFAULT_QUERY_TOKEN_BUDGET,
     queryDepth: graphConfig.queryDepth ?? DEFAULT_QUERY_DEPTH,
     injectIntoPrompts: graphConfig.injectIntoPrompts !== false,

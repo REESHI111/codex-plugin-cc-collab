@@ -74,6 +74,8 @@ export const DEFAULT_ORCHESTRATION_CONFIG = {
     lockUpdates: true,
     staleLockMs: 600000,
     recordPendingUpdates: true,
+    recordGraphEvents: true,
+    graphEventLimit: 200,
     queryTokenBudget: 2000,
     queryDepth: 2,
     injectIntoPrompts: true,

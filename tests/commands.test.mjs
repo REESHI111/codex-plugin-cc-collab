@@ -142,6 +142,7 @@ test("collaborative commands expose pair, inline, debate, and parallel workflows
   assert.match(graph, /query <text>/);
   assert.match(graph, /path <source> <target>/);
   assert.match(graph, /view \[overview\|files\|architecture\|hotspots\]/);
+  assert.match(graph, /timeline \[event-type\]/);
   assert.match(graph, /stress \[query\]/);
   assert.match(graph, /Return the command stdout verbatim/i);
 

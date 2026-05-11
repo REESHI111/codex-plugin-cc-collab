@@ -474,6 +474,38 @@ test("Graphify provider prevents duplicate orchestration memory", async () => {
   assert.equal(second.filePath, first.filePath);
 });
 
+test("Graphify provider records live graph events for memory and sync activity", async () => {
+  const cwd = makeTempDir();
+  fs.mkdirSync(path.join(cwd, "graphify-out"), { recursive: true });
+  const provider = new GraphifyContextProvider({
+    cwd,
+    config: {
+      contextGraph: {
+        enabled: true,
+        graphPath: "graphify-out/graph.json"
+      }
+    }
+  });
+
+  await provider.saveExecutionMemory({
+    workflow: "pair",
+    mode: "balanced",
+    task: "update live memory graph",
+    summary: "Decided to record live graph events for memory updates.",
+    filesModified: ["src/live.ts"]
+  });
+  await provider.enqueueUpdate(["src/live.ts"], {
+    reason: "test-live",
+    workerScriptPath: path.join(cwd, "missing-worker.mjs")
+  });
+  const timeline = await provider.graphTimeline({ limit: 5 });
+
+  assert.equal(timeline.ok, true);
+  assert.match(timeline.text, /Graph live context timeline/);
+  assert.match(timeline.text, /memory-saved/);
+  assert.match(timeline.text, /sync-queued/);
+});
+
 test("Graphify provider renders graph views for architecture navigation", async () => {
   const provider = new GraphifyContextProvider({
     cwd: process.cwd(),
