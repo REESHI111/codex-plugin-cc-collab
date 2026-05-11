@@ -32,6 +32,7 @@ import {
 import { normalizeWorkflowMode, resolveWorkflowMode } from "./lib/orchestration/modes.mjs";
 import { sanitizeCommandPrompt } from "./lib/orchestration/sanitizer.mjs";
 import {
+  runCollabWorkflow,
   runCodexInlineWorkflow,
   runDebateWorkflow,
   runPairWorkflow,
@@ -95,6 +96,7 @@ function printUsage() {
       "  node scripts/codex-companion.mjs review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>]",
       "  node scripts/codex-companion.mjs adversarial-review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [focus text]",
       "  node scripts/codex-companion.mjs task [--background] [--write] [--sandbox <mode>] [--approval <mode>] [--full-power] [--resume-last|--resume|--fresh] [prompt]",
+      "  node scripts/codex-companion.mjs collab [--read-only|--full-power] [--claude-brief-file <file>] [prompt-or-pipeline]",
       "  node scripts/codex-companion.mjs codex-inline [--read-only|--full-power] [--model <model|spark>] [--effort <none|minimal|low|medium|high|xhigh>] [prompt]",
       "  node scripts/codex-companion.mjs pair [--read-only|--full-power] [--claude-plan-file <file>] [--model <model|spark>] [prompt]",
       "  node scripts/codex-companion.mjs debate [--claude-proposal-file <file>] [--model <model|spark>] [prompt]",
@@ -1261,6 +1263,50 @@ async function handleCodexInline(argv) {
   });
 }
 
+async function handleCollab(argv) {
+  const { options, positionals } = parseCommandInput(argv, {
+    valueOptions: ["model", "effort", "cwd", "prompt-file", "claude-brief", "claude-brief-file", "sandbox", "approval"],
+    booleanOptions: ["json", "write", "read-only", "full-power"],
+    aliasMap: { m: "model" }
+  });
+  const cwd = resolveCommandCwd(options);
+  const input = readTaskPrompt(cwd, options, positionals);
+  requireTaskRequest(input, false);
+  const claudeBrief = readTextInput(cwd, options, {
+    valueOption: "claude-brief",
+    fileOption: "claude-brief-file"
+  });
+  const model = normalizeRequestedModel(options.model);
+  const effort = normalizeReasoningEffort(options.effort);
+  const write = !options["read-only"];
+  const config = loadOrchestrationConfig(resolveWorkspaceRoot(cwd));
+
+  await runCollaborationCommand({
+    cwd,
+    workflow: "collab",
+    title: "Programmable Collaboration",
+    summary: shorten(input),
+    write,
+    json: options.json,
+    runner: (progress) =>
+      runCollabWorkflow({
+        cwd,
+        input,
+        claudeBrief,
+        write,
+        model,
+        effort,
+        config,
+        permissionOptions: {
+          sandboxMode: options.sandbox,
+          approvalMode: options.approval,
+          fullPower: Boolean(options["full-power"])
+        },
+        onProgress: progress
+      })
+  });
+}
+
 async function handlePair(argv) {
   const { options, positionals } = parseCommandInput(argv, {
     valueOptions: ["model", "effort", "cwd", "prompt-file", "claude-plan", "claude-plan-file", "sandbox", "approval"],
@@ -1977,6 +2023,9 @@ async function main() {
       break;
     case "codex-inline":
       await handleCodexInline(argv);
+      break;
+    case "collab":
+      await handleCollab(argv);
       break;
     case "pair":
       await handlePair(argv);

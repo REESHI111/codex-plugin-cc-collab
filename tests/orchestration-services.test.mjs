@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { createLoopGuard } from "../plugins/codex/scripts/lib/orchestration/loop-protection.mjs";
+import { parseCollabPipeline, shouldEscalateCollab, pipelineDiagram } from "../plugins/codex/scripts/lib/orchestration/collab.mjs";
 import { createMetricsCollector, renderExecutionMetrics } from "../plugins/codex/scripts/lib/orchestration/metrics.mjs";
 import { normalizeWorkflowMode, resolveWorkflowMode } from "../plugins/codex/scripts/lib/orchestration/modes.mjs";
 import { buildCodexInlinePrompt } from "../plugins/codex/scripts/lib/orchestration/prompts.mjs";
@@ -93,6 +94,67 @@ test("loop guard blocks repeated prompts and excessive depth", () => {
 
   const deepGuard = createLoopGuard({ loopProtection: { maxDepth: 1 } }, { depth: 2 });
   assert.throws(() => deepGuard.assertCanStart("pair"), /Maximum orchestration depth exceeded/);
+});
+
+test("collab parser normalizes structured, inline, and natural pipelines", () => {
+  const config = {
+    providers: {
+      claude: { type: "claude", label: "Claude" },
+      codex: { type: "codex", label: "Codex" }
+    }
+  };
+  const structured = parseCollabPipeline("codex>brainstorm\nclaude>analyze\ncodex>implement\nBuild a cache", config);
+  const structuredInline = parseCollabPipeline("codex>brainstorm claude>analyze codex>implement Build a cache", config);
+  const inline = parseCollabPipeline("brainstorm=codex analyze=claude implement=codex build cache", config);
+  const natural = parseCollabPipeline("cu Codex brainstorms the idea, Claude analyzes architecture, Codex implements the cache.", config);
+
+  assert.deepEqual(structured.stages.map((stage) => `${stage.provider}:${stage.role}`), [
+    "codex:brainstorm",
+    "claude:analyze",
+    "codex:implement"
+  ]);
+  assert.match(inline.task, /build cache/i);
+  assert.match(structuredInline.task, /Build a cache/i);
+  assert.deepEqual(structuredInline.stages.map((stage) => `${stage.provider}:${stage.role}`), [
+    "codex:brainstorm",
+    "claude:analyze",
+    "codex:implement"
+  ]);
+  assert.equal(natural.stages.at(-1).role, "implement");
+  assert.match(pipelineDiagram(structured.stages), /codex:brainstorm -> claude:analyze -> codex:implement/);
+});
+
+test("collab parser rejects unknown providers and recursive orchestration", () => {
+  const config = {
+    providers: {
+      claude: { type: "claude" },
+      codex: { type: "codex" }
+    }
+  };
+
+  assert.throws(() => parseCollabPipeline("gemini>implement", config), /unknown provider "gemini"/);
+  assert.throws(() => parseCollabPipeline("codex>implement /codex:collab again", config), /recursive orchestration/i);
+});
+
+test("collab escalation detects risky implementation signals", () => {
+  const result = shouldEscalateCollab({
+    stageResults: [
+      {
+        result: {
+          touchedFiles: ["src/auth/session.ts"],
+          commandExecutions: []
+        }
+      }
+    ],
+    metrics: {
+      graphContext: {
+        highestConfidence: "HIGH"
+      }
+    }
+  });
+
+  assert.equal(result.escalate, true);
+  assert.match(result.reasons.join("\n"), /risk-sensitive files/);
 });
 
 test("context graph config summarizes safe Graphify defaults", () => {

@@ -11,6 +11,7 @@ they already have.
 
 - `/codex:review` for a normal read-only Codex review
 - `/codex:adversarial-review` for a steerable challenge review
+- `/codex:collab` for programmable lightweight collaboration pipelines
 - `/codex:pair` for Claude architecture + Codex implementation + Claude review
 - `/codex:codex-inline` for fast direct Codex implementation
 - `/codex:debate` for Claude and Codex tradeoff comparison
@@ -132,6 +133,7 @@ You can also let the plugin run the dependency install explicitly:
 ```bash
 /codex:mode balanced
 /codex:codex-inline --read-only inspect the project structure
+/codex:collab --read-only codex>brainstorm claude>analyze codex>implement
 /codex:pair --read-only plan a small safe refactor
 ```
 
@@ -224,6 +226,35 @@ Ask Codex to redesign the database connection to be more resilient.
 - if you do not pass `--model` or `--effort`, Codex chooses its own defaults.
 - if you say `spark`, the plugin maps that to `gpt-5.3-codex-spark`
 - follow-up rescue requests can continue the latest Codex task in the repo
+
+### `/codex:collab`
+
+Runs a lightweight programmable collaboration pipeline. It is designed for controlled, user-directed orchestration: you choose which provider handles each stage, and the runtime validates the pipeline before execution.
+
+Default behavior:
+
+1. Claude plans or analyzes.
+2. Codex implements.
+3. Claude reviews only when selective escalation is triggered.
+
+Examples:
+
+```bash
+/codex:collab add loading states to the billing page
+/codex:collab codex>brainstorm claude>analyze codex>implement
+/codex:collab brainstorm=codex analyze=claude implement=codex review=claude
+/codex:collab cu "Codex brainstorms, Claude analyzes architecture, Codex implements, Claude reviews only if risky."
+```
+
+Pipeline formats:
+
+- `provider>role` structured stages, such as `codex>brainstorm`
+- `role=provider` inline stages, such as `brainstorm=codex`
+- natural-language collaboration definitions, normalized into safe structured stages before execution
+
+The runtime does not pass full conversation history between stages. Each stage produces a compact artifact with summary, decisions, todos, architecture notes, risks, and bounded next-stage input. This keeps context transfer deterministic and token-efficient.
+
+Use this when you want cheaper collaboration than `/codex:pair`, custom model responsibilities, or a simple provider pipeline without full iterative review loops.
 
 ### `/codex:pair`
 
@@ -426,7 +457,8 @@ Collaborative features are added as extension layers:
 - `plugins/codex/scripts/lib/orchestration/config.mjs` loads workflow configuration
 - `plugins/codex/scripts/lib/orchestration/executors.mjs` defines the `ModelExecutor` abstraction plus `CodexExecutor` and command-side `ClaudeExecutor`
 - `plugins/codex/scripts/lib/orchestration/prompts.mjs` contains configurable prompt strategies
-- `plugins/codex/scripts/lib/orchestration/workflows.mjs` implements `pair`, `codex-inline`, `debate`, and `parallel`
+- `plugins/codex/scripts/lib/orchestration/collab.mjs` parses, validates, and renders programmable collaboration pipelines
+- `plugins/codex/scripts/lib/orchestration/workflows.mjs` implements `collab`, `pair`, `codex-inline`, `debate`, and `parallel`
 - `plugins/codex/scripts/lib/orchestration/context-graph.mjs` defines the context graph provider adapter used for Graphify-backed project memory
 
 `ModelExecutor` is intentionally provider-neutral. Future executors such as Gemini, OpenRouter, Ollama, DeepSeek, or local models can implement the same methods:
@@ -478,6 +510,13 @@ Add `codex-companion.config.json` at the workspace root, or `.codex-companion/co
     "maxRetries": 1,
     "timeoutMs": 900000,
     "repeatedPromptLimit": 2
+  },
+  "collab": {
+    "autoEscalate": true,
+    "maxStages": 8,
+    "largeRefactorFileThreshold": 8,
+    "structuredArtifacts": true,
+    "passFullConversation": false
   },
   "metrics": {
     "enabled": true
@@ -822,7 +861,7 @@ Troubleshooting:
 
 Existing commands continue to work. `/codex:review`, `/codex:adversarial-review`, `/codex:rescue`, `/codex:status`, `/codex:result`, `/codex:cancel`, and `/codex:setup` keep their original transport and state model.
 
-The new workflows are opt-in. Use `/codex:rescue` for the previous delegation style, `/codex:codex-inline` for fast direct Codex execution, and `/codex:pair` when you want Claude and Codex to collaborate iteratively.
+The new workflows are opt-in. Use `/codex:rescue` for the previous delegation style, `/codex:codex-inline` for fast direct Codex execution, `/codex:collab` for programmable lightweight collaboration, and `/codex:pair` when you want Claude and Codex to collaborate iteratively.
 
 > [!WARNING]
 > The review gate can create a long-running Claude/Codex loop and may drain usage limits quickly. Only enable it when you plan to actively monitor the session.
@@ -915,6 +954,7 @@ If you need to point the built-in OpenAI provider at a different endpoint, set `
 This collaborative runtime now includes:
 
 - Claude + Codex pair programming with `/codex:pair`
+- programmable lightweight collaboration pipelines with `/codex:collab`
 - fast direct Codex execution with `/codex:codex-inline`
 - read-only architecture comparison with `/codex:debate`
 - configurable multi-agent execution with `/codex:parallel`
@@ -947,7 +987,7 @@ This collaborative runtime now includes:
 Use this section to verify what was implemented across the architecture upgrade:
 
 1. **Collaborative orchestration commands**
-   Added `/codex:pair`, `/codex:codex-inline`, `/codex:debate`, and `/codex:parallel` while preserving the existing plugin runtime.
+   Added `/codex:collab`, `/codex:pair`, `/codex:codex-inline`, `/codex:debate`, and `/codex:parallel` while preserving the existing plugin runtime.
 
 2. **Executor abstraction and routing**
    Added provider-neutral executor structure around Claude/Codex roles so future providers can be added without rewriting workflows.

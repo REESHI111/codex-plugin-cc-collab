@@ -399,7 +399,8 @@ export function renderCollaborationResult(result) {
   const title = {
     pair: "Claude + Codex Pair",
     debate: "Claude + Codex Debate",
-    parallel: "Parallel Multi-Agent Run"
+    parallel: "Parallel Multi-Agent Run",
+    collab: "Programmable Collaboration Pipeline"
   }[result.workflow] ?? "Collaborative Workflow";
 
   const lines = [`# ${title}`, "", result.summary ?? "Workflow completed."];
@@ -428,6 +429,32 @@ export function renderCollaborationResult(result) {
           lines.push(`- ${file}`);
         }
       }
+    }
+  } else if (result.workflow === "collab") {
+    if (result.pipeline?.stages?.length) {
+      lines.push("", "Pipeline:");
+      lines.push(`- ${result.pipeline.stages.map((stage) => `${stage.provider}:${stage.role}`).join(" -> ")}`);
+    }
+    for (const stage of result.stages ?? []) {
+      const statusLabel = stage.ok ? "completed" : "failed";
+      lines.push("", `## ${stage.label ?? stage.provider} ${stage.role} (${statusLabel})`);
+      lines.push("");
+      lines.push(stage.artifact?.summary ?? stage.output ?? "");
+      if (stage.artifact?.decisions?.length) {
+        lines.push("", "Decisions:");
+        for (const decision of stage.artifact.decisions) lines.push(`- ${decision}`);
+      }
+      if (stage.artifact?.todos?.length) {
+        lines.push("", "Todos:");
+        for (const todo of stage.artifact.todos) lines.push(`- ${todo}`);
+      }
+      if (stage.escalation) {
+        lines.push("", "Escalation: selective review triggered.");
+      }
+    }
+    if (result.escalation?.reasons?.length) {
+      lines.push("", "Escalation reasons:");
+      for (const reason of result.escalation.reasons) lines.push(`- ${reason}`);
     }
   }
 

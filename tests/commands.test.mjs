@@ -77,6 +77,7 @@ test("continue is not exposed as a user-facing command", () => {
     "cancel.md",
     "ccv.md",
     "codex-inline.md",
+    "collab.md",
     "debate.md",
     "graph.md",
     "mode.md",
@@ -93,6 +94,7 @@ test("continue is not exposed as a user-facing command", () => {
 
 test("collaborative commands expose pair, inline, debate, and parallel workflows", () => {
   const pair = read("commands/pair.md");
+  const collab = read("commands/collab.md");
   const inline = read("commands/codex-inline.md");
   const debate = read("commands/debate.md");
   const parallel = read("commands/parallel.md");
@@ -111,6 +113,12 @@ test("collaborative commands expose pair, inline, debate, and parallel workflows
   assert.match(pair, /--full-power/i);
   assert.match(pair, /\[CLAUDE\]/);
   assert.match(pair, /\[CODEX\]/);
+
+  assert.match(collab, /programmable collaboration pipeline/i);
+  assert.match(collab, /codex>brainstorm/);
+  assert.match(collab, /brainstorm=codex/);
+  assert.match(collab, /Codex brainstorms the idea/i);
+  assert.match(collab, /collab --claude-brief-file/);
 
   assert.match(inline, /codex-companion\.mjs" codex-inline "\$ARGUMENTS"/);
   assert.match(inline, /fast Codex implementation pass/i);
@@ -152,6 +160,7 @@ test("collaborative commands expose pair, inline, debate, and parallel workflows
   assert.match(mode, /codex-companion\.mjs" mode "\$ARGUMENTS"/);
 
   assert.match(readme, /### `\/codex:pair`/);
+  assert.match(readme, /### `\/codex:collab`/);
   assert.match(readme, /### `\/codex:codex-inline`/);
   assert.match(readme, /### `\/codex:debate`/);
   assert.match(readme, /### `\/codex:parallel`/);

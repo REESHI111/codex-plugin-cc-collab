@@ -1,6 +1,6 @@
 {
   "name": "codex",
-  "version": "2.3.0",
+  "version": "2.4.0",
   "description": "Use Codex from Claude Code for reviews, delegation, collaborative coding, and Graphify-backed context memory.",
   "author": {
     "name": "OpenAI"

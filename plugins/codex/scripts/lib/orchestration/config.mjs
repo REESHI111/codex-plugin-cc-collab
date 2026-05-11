@@ -45,6 +45,13 @@ export const DEFAULT_ORCHESTRATION_CONFIG = {
     timeoutMs: 900000,
     repeatedPromptLimit: 2
   },
+  collab: {
+    autoEscalate: true,
+    maxStages: 8,
+    largeRefactorFileThreshold: 8,
+    structuredArtifacts: true,
+    passFullConversation: false
+  },
   metrics: {
     enabled: true,
     costRates: {

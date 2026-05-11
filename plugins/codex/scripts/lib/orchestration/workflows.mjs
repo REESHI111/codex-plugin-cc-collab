@@ -10,6 +10,12 @@ import { createMetricsCollector } from "./metrics.mjs";
 import { applyWorkflowMode, resolveWorkflowMode } from "./modes.mjs";
 import { buildPermissionProfile } from "./permissions.mjs";
 import { retrieveContextGraphForTask, updateContextGraphAfterWorkflow } from "./context-graph.mjs";
+import {
+  buildStageArtifact,
+  parseCollabPipeline,
+  pipelineDiagram,
+  shouldEscalateCollab
+} from "./collab.mjs";
 
 function firstLine(text, fallback) {
   return (
@@ -49,6 +55,45 @@ function normalizeCodexResult(result, label) {
     permissionIssue: result.permissionIssue ?? null,
     commandExecutions: result.commandExecutions ?? []
   };
+}
+
+function buildCollabStagePrompt({ task, stage, artifacts = [], contextGraphText = "" }) {
+  const prior = artifacts.length
+    ? artifacts.map((artifact) => [
+        `Stage ${artifact.provider}:${artifact.role}`,
+        `Summary: ${artifact.summary}`,
+        artifact.decisions?.length ? `Decisions: ${artifact.decisions.join("; ")}` : "",
+        artifact.todos?.length ? `Todos: ${artifact.todos.join("; ")}` : "",
+        artifact.risks?.length ? `Risks: ${artifact.risks.join("; ")}` : ""
+      ].filter(Boolean).join("\n")).join("\n\n")
+    : "No prior stage artifacts.";
+  return [
+    `You are ${stage.provider} executing the "${stage.role}" stage in a deterministic collaboration pipeline.`,
+    "Use only the bounded structured artifacts below; do not ask other agents to run recursively.",
+    "Return a compact result with: summary, decisions, todos, risks, and verification.",
+    "",
+    "User task:",
+    task,
+    "",
+    "Prior stage artifacts:",
+    prior,
+    contextGraphText ? `\nRelevant context graph:\n${contextGraphText}` : ""
+  ].filter(Boolean).join("\n");
+}
+
+function claudeStageOutput({ stage, task, artifacts = [], claudeBrief = "" }) {
+  if (claudeBrief.trim()) {
+    return claudeBrief.trim();
+  }
+  const prior = artifacts.map((artifact) => `${artifact.provider}:${artifact.role} ${artifact.summary}`).join("\n");
+  return [
+    `Claude ${stage.role} stage completed as a bounded command-side artifact.`,
+    `Task: ${task}`,
+    prior ? `Prior context:\n${prior}` : "",
+    "Decisions: use the structured pipeline order and keep context transfer bounded.",
+    "Todos: execute the next supported provider stage and verify only when risk requires it.",
+    "Risks: avoid recursive orchestration and unbounded conversation history transfer."
+  ].filter(Boolean).join("\n");
 }
 
 export async function runCodexInlineWorkflow({ cwd, task, write = true, model, effort, config, permissionOptions, onProgress }) {
@@ -366,6 +411,149 @@ export async function runParallelWorkflow({ cwd, task, agents, write = true, mod
     summary: `${outputs.filter((output) => output.ok).length}/${outputs.length} parallel agent(s) completed.`,
     task,
     outputs,
+    metrics: finalMetrics
+  };
+  payload.contextGraph = {
+    retrieval: contextGraph,
+    ...(await updateContextGraphAfterWorkflow({ cwd, config, workflowResult: payload, onProgress }))
+  };
+  return payload;
+}
+
+export async function runCollabWorkflow({ cwd, input, claudeBrief = "", write = true, model, effort, config, permissionOptions, onProgress }) {
+  const mode = resolveWorkflowMode(config);
+  config = applyWorkflowMode(config, mode.id);
+  const pipeline = parseCollabPipeline(input, config);
+  const task = pipeline.task || input;
+  const loopGuard = createLoopGuard(config);
+  loopGuard.assertCanStart("collab");
+  loopGuard.trackIteration("collab");
+  loopGuard.trackPrompt(`${task}\n${pipelineDiagram(pipeline.stages)}`);
+
+  const metrics = createMetricsCollector(config);
+  metrics.startExecution({ workflow: "collab", mode: mode.id });
+  const contextGraph = await retrieveContextGraphForTask({
+    cwd,
+    config,
+    task,
+    workflow: "collab",
+    mode: mode.id,
+    onProgress
+  });
+  metrics.trackGraphContext(contextGraph);
+
+  const artifacts = [];
+  const stageResults = [];
+  let lastCodex = null;
+  for (const [index, stage] of pipeline.stages.entries()) {
+    const provider = getProvider(config, stage.provider);
+    const executor = createExecutor(stage.provider, provider);
+    const startedAt = Date.now();
+    onProgress?.({ message: `[${executor.label.toUpperCase()}] ${stage.role}.`, phase: "collab" });
+
+    if (provider.type === "claude" || stage.provider === "claude") {
+      const output = claudeStageOutput({ stage, task, artifacts, claudeBrief: index === 0 ? claudeBrief : "" });
+      metrics.trackModelUsage("claude", { inputText: task, outputText: output });
+      const artifact = buildStageArtifact({ stage, output, previousArtifacts: artifacts, task });
+      artifacts.push(artifact);
+      stageResults.push({
+        ...stage,
+        label: executor.label,
+        ok: true,
+        skippedExecution: true,
+        durationMs: Date.now() - startedAt,
+        artifact,
+        output
+      });
+      continue;
+    }
+
+    const roleIsWrite = stage.role.startsWith("implement") || ["refactor", "migrate"].includes(stage.role);
+    const prompt = buildCollabStagePrompt({
+      task,
+      stage,
+      artifacts,
+      contextGraphText: contextGraph.text
+    });
+    metrics.trackModelUsage(stage.provider === "codex" ? "codex" : "codex", { inputText: prompt });
+    const permissionProfile = buildPermissionProfile(config, {
+      allowFileWrites: write !== false && roleIsWrite,
+      ...permissionOptions
+    });
+    const result = await executor.executeTask(
+      { prompt },
+      {
+        cwd,
+        write: write !== false && roleIsWrite,
+        model: stage.provider === "codex" ? model : provider.model,
+        effort: stage.provider === "codex" ? effort : provider.effort,
+        onProgress,
+        config,
+        permissionProfile,
+        persistThread: true,
+        threadName: `Collab ${executor.label}: ${stage.role}`,
+        ...buildExecutionOptions(config)
+      }
+    );
+    metrics.absorbCodexResult(result);
+    const artifact = buildStageArtifact({
+      stage,
+      output: result.finalMessage ?? result.rawOutput ?? "",
+      previousArtifacts: artifacts,
+      task
+    });
+    artifacts.push(artifact);
+    const normalized = normalizeCodexResult(result, executor.label);
+    if (stage.provider === "codex") {
+      lastCodex = normalized;
+    }
+    stageResults.push({
+      ...stage,
+      label: executor.label,
+      ok: result.status === 0,
+      durationMs: Date.now() - startedAt,
+      artifact,
+      result: normalized,
+      output: normalized.rawOutput
+    });
+  }
+
+  let finalMetrics = metrics.snapshot();
+  const escalation = shouldEscalateCollab({ stageResults, metrics: finalMetrics, config });
+  const hasExplicitReview = pipeline.stages.some((stage) => stage.role === "review");
+  if (escalation.escalate && !hasExplicitReview && config.collab?.autoEscalate !== false) {
+    const stage = { id: `stage-${pipeline.stages.length + 1}`, provider: "claude", role: "review", source: "escalation" };
+    const output = [
+      "Selective escalation review requested.",
+      `Reasons: ${escalation.reasons.join("; ")}`,
+      `Latest artifact: ${artifacts.at(-1)?.summary ?? "none"}`,
+      "Todos: inspect the changed files and run targeted verification before shipping."
+    ].join("\n");
+    metrics.trackModelUsage("claude", { inputText: task, outputText: output });
+    const artifact = buildStageArtifact({ stage, output, previousArtifacts: artifacts, task });
+    artifacts.push(artifact);
+    stageResults.push({
+      ...stage,
+      label: "Claude",
+      ok: true,
+      escalation: true,
+      durationMs: 0,
+      artifact,
+      output
+    });
+  }
+
+  finalMetrics = metrics.finishExecution();
+  const payload = {
+    workflow: "collab",
+    mode: mode.id,
+    summary: `Collaboration pipeline completed: ${pipelineDiagram(pipeline.stages)}.`,
+    task,
+    pipeline,
+    stages: stageResults,
+    artifacts,
+    escalation,
+    codex: lastCodex,
     metrics: finalMetrics
   };
   payload.contextGraph = {
