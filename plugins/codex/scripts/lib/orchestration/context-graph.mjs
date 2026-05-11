@@ -15,8 +15,9 @@ const DEFAULT_LOCK_STALE_MS = 10 * 60 * 1000;
 const SUPPORTED_PROVIDERS = new Set(["graphify"]);
 const MODULE_DIR = path.dirname(fileURLToPath(import.meta.url));
 const PLUGIN_ROOT = path.resolve(MODULE_DIR, "../../../..");
-const GRAPHIFY_INSTALL_COMMAND = 'python3 -m pip install "graphifyy[all]"';
-const GRAPHIFY_MINIMAL_INSTALL_COMMAND = "python3 -m pip install graphifyy networkx tree_sitter";
+const GRAPHIFY_INSTALL_COMMAND = "python3 -m pip install graphifyy";
+const GRAPHIFY_MINIMAL_INSTALL_COMMAND = "python3 -m pip install graphifyy networkx tree_sitter datasketch rapidfuzz";
+const GRAPHIFY_REQUIRED_MODULES = ["graphify", "networkx", "tree_sitter", "datasketch", "rapidfuzz"];
 
 export function buildRecommendedContextGraphConfig(overrides = {}) {
   return {
@@ -103,6 +104,39 @@ function configuredPythonPaths(cwd, config = {}) {
     path.resolve(PLUGIN_ROOT, "..", "..", "graphify-7"),
     path.join(PLUGIN_ROOT, "vendor", "graphify-7")
   ]).map((entry) => (path.isAbsolute(entry) ? entry : path.join(cwd, entry)));
+}
+
+function commandHealth(command, args = ["--version"], options = {}) {
+  const result = runCommand(command, args, {
+    cwd: options.cwd ?? process.cwd(),
+    env: options.env ?? process.env,
+    maxBuffer: 1024 * 1024,
+    timeout: options.timeout ?? 15000
+  });
+  const output = `${String(result.stdout ?? "").trim()}${String(result.stderr ?? "").trim() ? ` ${String(result.stderr ?? "").trim()}` : ""}`.trim();
+  return {
+    ok: !result.error && result.status === 0,
+    command: [command, ...args].join(" "),
+    status: result.status,
+    output,
+    error: result.error?.message ?? null
+  };
+}
+
+function graphifyHealthDetail(health = {}) {
+  if (!health.python?.ok) {
+    return `Python is unavailable: ${health.python?.error ?? health.python?.output ?? "python not found"}`;
+  }
+  const missing = Object.entries(health.runtime?.checks ?? {})
+    .filter(([, check]) => !check.ok)
+    .map(([name, check]) => `${name}${check.error ? ` (${check.error})` : ""}`);
+  if (missing.length) {
+    return `Graphify engine dependencies missing: ${missing.join(", ")}`;
+  }
+  if (!health.pythonModuleCli?.ok) {
+    return `Graphify CLI failed: ${health.pythonModuleCli?.error ?? health.pythonModuleCli?.output ?? "python -m graphify failed"}`;
+  }
+  return "Graphify engine unavailable.";
 }
 
 function isEnabled(config = {}) {
@@ -245,17 +279,35 @@ import importlib
 import json
 import sys
 from pathlib import Path
+try:
+    from importlib import metadata as importlib_metadata
+except Exception:
+    importlib_metadata = None
 
 ${buildPythonPathBootstrap(pythonPaths)}
 
-modules = ["graphify", "networkx", "tree_sitter"]
+modules = ${JSON.stringify(GRAPHIFY_REQUIRED_MODULES)}
+distributions = {
+    "graphify": "graphifyy",
+    "networkx": "networkx",
+    "tree_sitter": "tree_sitter",
+    "datasketch": "datasketch",
+    "rapidfuzz": "rapidfuzz",
+}
 checks = {}
 for name in modules:
     try:
         module = importlib.import_module(name)
+        package_version = None
+        if importlib_metadata is not None:
+            try:
+                package_version = importlib_metadata.version(distributions.get(name, name))
+            except Exception:
+                package_version = None
         checks[name] = {
             "ok": True,
-            "version": getattr(module, "__version__", None)
+            "version": getattr(module, "__version__", None) or package_version,
+            "file": getattr(module, "__file__", None)
         }
     except Exception as exc:
         checks[name] = {
@@ -265,6 +317,7 @@ for name in modules:
 
 print(json.dumps({
     "ok": all(item["ok"] for item in checks.values()),
+    "python": sys.version.split()[0],
     "checks": checks,
 }))
 `;
@@ -753,12 +806,8 @@ export class GraphifyContextProvider extends ContextGraphProvider {
       : 0;
     const graphExists = fs.existsSync(this.graphPath);
     const reportExists = fs.existsSync(this.reportPath);
-    const cli = runCommand(this.command, [...configuredGraphifyArgs(this.config), "--help"], {
-      cwd: this.cwd,
-      env: this.env,
-      maxBuffer: 1024 * 1024
-    });
-    const available = !cli.error && cli.status === 0;
+    const health = await this.checkHealth();
+    const available = Boolean(health.runtime.ok && health.pythonModuleCli.ok);
     const data = graphExists ? readJsonIfExists(this.graphPath) : null;
     const nodes = Array.isArray(data?.nodes) ? data.nodes.length : 0;
     const links = Array.isArray(data?.links) ? data.links.length : Array.isArray(data?.edges) ? data.edges.length : 0;
@@ -780,7 +829,8 @@ export class GraphifyContextProvider extends ContextGraphProvider {
       memoryRetrieval: this.config.contextGraph?.memoryRetrieval !== false,
       lastUpdated: stat?.mtime?.toISOString() ?? null,
       updateStrategy: this.config.contextGraph?.updateStrategy ?? "workflow-end",
-      detail: available ? "graphify available" : cli.error?.message ?? cli.stderr.trim() ?? cli.stdout.trim() ?? "graphify unavailable"
+      health,
+      detail: available ? "Graphify engine available." : graphifyHealthDetail(health)
     };
   }
 
@@ -819,10 +869,79 @@ export class GraphifyContextProvider extends ContextGraphProvider {
     };
   }
 
+  async checkHealth() {
+    const python = this.config.contextGraph?.pythonCommand ?? "python3";
+    const runtime = await this.checkRuntime();
+    const pythonVersion = commandHealth(python, ["--version"], { cwd: this.cwd, env: this.env });
+    const pythonModuleCli = commandHealth(python, [...configuredGraphifyArgs(this.config), "--help"], {
+      cwd: this.cwd,
+      env: this.env
+    });
+    return {
+      python: pythonVersion,
+      uv: commandHealth("uv", ["--version"], { cwd: this.cwd, env: this.env }),
+      pipx: commandHealth("pipx", ["--version"], { cwd: this.cwd, env: this.env }),
+      pip: commandHealth(python, ["-m", "pip", "--version"], { cwd: this.cwd, env: this.env }),
+      graphifyCli: commandHealth("graphify", ["--help"], { cwd: this.cwd, env: this.env }),
+      pythonModuleCli,
+      runtime
+    };
+  }
+
+  async installDependencies() {
+    const python = this.config.contextGraph?.pythonCommand ?? "python3";
+    const install = runCommand(python, ["-m", "pip", "install", "graphifyy"], {
+      cwd: this.cwd,
+      env: this.env,
+      maxBuffer: 10 * 1024 * 1024,
+      timeout: Number(this.config.contextGraph?.installTimeoutMs ?? 300000) || 300000
+    });
+    if (!install.error && install.status === 0) {
+      return {
+        ok: true,
+        command: GRAPHIFY_INSTALL_COMMAND,
+        status: install.status,
+        stdout: install.stdout,
+        stderr: install.stderr,
+        detail: "Installed Graphify dependencies."
+      };
+    }
+    const fallback = runCommand(python, ["-m", "pip", "install", "graphifyy", "networkx", "tree_sitter", "datasketch", "rapidfuzz"], {
+      cwd: this.cwd,
+      env: this.env,
+      maxBuffer: 10 * 1024 * 1024,
+      timeout: Number(this.config.contextGraph?.installTimeoutMs ?? 300000) || 300000
+    });
+    return {
+      ok: !fallback.error && fallback.status === 0,
+      command: GRAPHIFY_MINIMAL_INSTALL_COMMAND,
+      primary: {
+        ok: false,
+        status: install.status,
+        stdout: install.stdout,
+        stderr: install.stderr,
+        error: install.error?.message ?? null
+      },
+      status: fallback.status,
+      stdout: fallback.stdout,
+      stderr: fallback.stderr,
+      error: fallback.error?.message ?? null,
+      detail: !fallback.error && fallback.status === 0
+        ? "Installed minimal Graphify dependencies."
+        : fallback.error?.message ?? fallback.stderr.trim() ?? install.stderr.trim() ?? "Graphify dependency install failed."
+    };
+  }
+
   async bootstrap(options = {}) {
     this.ensureStorage();
-    const before = await this.getStatus();
-    const runtime = await this.checkRuntime();
+    let before = await this.getStatus();
+    let runtime = before.health?.runtime ?? await this.checkRuntime();
+    let install = null;
+    if (!runtime.ok && options.install === true) {
+      install = await this.installDependencies();
+      before = await this.getStatus();
+      runtime = before.health?.runtime ?? await this.checkRuntime();
+    }
     const shouldBuild = options.force === true || !before.graphExists;
     let build = {
       ok: true,
@@ -836,6 +955,7 @@ export class GraphifyContextProvider extends ContextGraphProvider {
           ok: true,
           partial: true,
           runtime,
+          install,
           before,
           build: {
             ok: true,
@@ -845,6 +965,7 @@ export class GraphifyContextProvider extends ContextGraphProvider {
           after: before,
           configEnabled: options.configEnabled ?? isEnabled(this.config),
           nextSteps: [
+            "Run `/codex:graph init --install` to let the plugin install Graphify Python dependencies with pip.",
             `Install Graphify Python dependencies with \`${GRAPHIFY_INSTALL_COMMAND}\`.`,
             `If extras are blocked, use \`${GRAPHIFY_MINIMAL_INSTALL_COMMAND}\` first.`,
             "Set `contextGraph.enabled` to `true` in `codex-companion.config.json` if prompt injection is not enabled yet."
@@ -855,6 +976,7 @@ export class GraphifyContextProvider extends ContextGraphProvider {
       return {
         ok: false,
         runtime,
+        install,
         before,
         build: {
           ok: false,
@@ -864,6 +986,7 @@ export class GraphifyContextProvider extends ContextGraphProvider {
         after: before,
         configEnabled: isEnabled(this.config),
         nextSteps: [
+          "Run `/codex:graph init --install` to let the plugin install Graphify Python dependencies with pip.",
           `Install Graphify Python dependencies with \`${GRAPHIFY_INSTALL_COMMAND}\`.`,
           `If extras are blocked, use \`${GRAPHIFY_MINIMAL_INSTALL_COMMAND}\` first.`,
           "Then rerun `/codex:graph init`."
@@ -897,6 +1020,7 @@ export class GraphifyContextProvider extends ContextGraphProvider {
     return {
       ok,
       runtime,
+      install,
       before,
       build,
       after,

@@ -109,14 +109,14 @@ One simple first run is:
 4. If `/codex:graph init` reports missing Python dependencies, install Graphify's Python dependencies in the environment that runs Claude Code/Codex, then rerun:
 
 ```bash
-python3 -m pip install "graphifyy[all]"
+python3 -m pip install graphifyy
 /codex:graph init --force
 ```
 
-If your Python environment rejects optional extras, install the minimum runtime first:
+You can also let the plugin run the dependency install explicitly:
 
 ```bash
-python3 -m pip install graphifyy networkx tree_sitter
+/codex:graph init --install
 ```
 
 5. Confirm the main collaborative commands:
@@ -517,13 +517,14 @@ The context graph layer is optional and disabled by default for compatibility. E
 }
 ```
 
-The adapter defaults to `python3 -m graphify`. In a development checkout it also adds local Graphify source folders such as `graphify-7` to `PYTHONPATH`; in an installed Claude plugin, install the published Python package with `python3 -m pip install "graphifyy[all]"`. The PyPI package is named `graphifyy`, while the Python module and CLI remain `graphify`. If your environment uses a different install, set `contextGraph.command`, `contextGraph.commandArgs`, or `contextGraph.pythonPath`.
+The adapter defaults to `python3 -m graphify`. In a development checkout it also adds local Graphify source folders such as `graphify-7` to `PYTHONPATH`; in an installed Claude plugin, install the published Python package with `python3 -m pip install graphifyy` or run `/codex:graph init --install`. The PyPI package is named `graphifyy`, while the Python module and CLI remain `graphify`. If your environment uses a different install, set `contextGraph.command`, `contextGraph.commandArgs`, or `contextGraph.pythonPath`.
 
 Graphify runtime notes:
 
 - Existing `graph.json` files can still be queried through the built-in JavaScript fallback even when Python graph dependencies are unavailable.
-- Building or updating a graph requires Graphify's Python dependencies. Recommended install: `python3 -m pip install "graphifyy[all]"`.
+- Building or updating a graph requires Graphify's Python dependencies. Recommended install: `python3 -m pip install graphifyy`.
 - `/codex:graph init` creates `graphify-out/` and `graphify-out/memory/orchestration/`, checks dependencies, and reports exactly what is missing.
+- `/codex:graph init --install` explicitly allows the runtime to install the core Graphify package with pip before building.
 - If you rely on the bundled Graphify source during development or marketplace publishing, keep `graphify-7/` committed and do not ignore it.
 - `/codex:graph enable` changes plugin state only; it does not delete or rewrite existing graph files.
 - `/codex:graph disable` turns off prompt injection and memory retrieval without removing `graphify-out`.

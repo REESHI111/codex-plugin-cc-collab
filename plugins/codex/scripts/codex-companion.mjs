@@ -678,7 +678,26 @@ function renderGraphPayload(payload) {
     if (status.lastUpdated) {
       lines.push(`- Last Updated: ${status.lastUpdated}`);
     }
+    if (status.health) {
+      lines.push("", "Provider Health:");
+      lines.push(`- Python: ${status.health.python?.ok ? "installed" : "missing"}${status.health.python?.output ? ` (${status.health.python.output})` : ""}`);
+      lines.push(`- uv: ${status.health.uv?.ok ? "installed" : "missing"}`);
+      lines.push(`- pipx: ${status.health.pipx?.ok ? "installed" : "missing"}`);
+      lines.push(`- pip: ${status.health.pip?.ok ? "installed" : "missing"}`);
+      lines.push(`- graphify module: ${status.health.runtime?.checks?.graphify?.ok ? "ok" : status.health.runtime?.checks?.graphify?.error ?? "missing"}`);
+      lines.push(`- graphifyy package: ${status.health.runtime?.checks?.graphify?.version ?? "bundled/source"}`);
+      lines.push(`- graphify CLI: ${status.health.pythonModuleCli?.ok ? "ok" : status.health.pythonModuleCli?.error ?? status.health.pythonModuleCli?.output ?? "missing"}`);
+    }
     lines.push(`- Detail: ${status.detail}`);
+    if (!status.enabled) {
+      lines.push("", "Next steps:");
+      lines.push("- Run `/codex:graph enable` to turn on context graph memory.");
+      lines.push("- Then run `/codex:graph init --install` to validate dependencies and build the graph.");
+    } else if (!status.available) {
+      lines.push("", "Next steps:");
+      lines.push("- Run `/codex:graph init --install` to bootstrap Graphify dependencies automatically.");
+      lines.push("- Or install manually with `python3 -m pip install graphifyy`, then run `/codex:graph init --force`.");
+    }
     return `${lines.join("\n").trimEnd()}\n`;
   }
 
@@ -708,9 +727,13 @@ function renderGraphPayload(payload) {
     lines.push(result.ok ? "Context graph bootstrap completed." : "Context graph bootstrap needs attention.");
     lines.push("");
     lines.push(`- Runtime: ${result.runtime?.ok ? "ready" : "not ready"}`);
+    if (result.install) {
+      lines.push(`- Install: ${result.install.ok ? "ok" : "failed"}`);
+      lines.push(`- Install Detail: ${result.install.detail}`);
+    }
     if (result.runtime?.checks) {
       for (const [name, check] of Object.entries(result.runtime.checks)) {
-        lines.push(`- ${name}: ${check.ok ? "ok" : check.error ?? "missing"}`);
+        lines.push(`- ${name}: ${check.ok ? `ok${check.version ? ` (${check.version})` : ""}` : check.error ?? "missing"}`);
       }
     }
     lines.push(`- Build: ${result.build?.ok ? "ok" : result.build?.skipped ? "skipped" : "failed"}`);
@@ -1280,7 +1303,7 @@ async function handleParallel(argv) {
 async function handleGraph(argv) {
   const { options, positionals } = parseCommandInput(argv, {
     valueOptions: ["cwd", "token-budget", "depth"],
-    booleanOptions: ["json", "force"]
+    booleanOptions: ["json", "force", "install"]
   });
 
   const cwd = resolveCommandCwd(options);
@@ -1352,6 +1375,7 @@ async function handleGraph(argv) {
       command,
       result: await provider.bootstrap({
         force: Boolean(options.force),
+        install: Boolean(options.install),
         configEnabled: config.contextGraph?.enabled === true
       })
     };
@@ -1502,7 +1526,7 @@ async function handleCcv(argv) {
   }
   if (!payload.graphifyRuntimeReady) {
     lines.push("", "Next steps:");
-    lines.push(`- Run \`${payload.graphifyRuntime.installCommand ?? 'python3 -m pip install "graphifyy[all]"'}\`.`);
+    lines.push(`- Run \`${payload.graphifyRuntime.installCommand ?? "python3 -m pip install graphifyy"}\`.`);
     lines.push("- Reload plugins after updating or reinstalling the marketplace package.");
   }
   outputResult(`${lines.join("\n").trimEnd()}\n`, false);
